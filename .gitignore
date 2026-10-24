@@ -20,6 +20,7 @@ local.properties
 .maestro/
 maestro/legacy/
 audit/
+docs/
 *.hprof
 *.log
 .DS_Store

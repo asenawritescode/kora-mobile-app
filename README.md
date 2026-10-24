@@ -13,13 +13,11 @@ repository contains the mobile app; the Kora Engine is a separate project.
   changes are saved on the device, then sent in order when the server is reachable.
 - Review pending, rejected, and conflicting changes in **Offline & sync**. The
   server remains authoritative for permissions, scripts, validation, and final
-  acceptance.
+acceptance.
 
 Initial sign-in and workspace download require a connection. An unsaved form is
 discarded when you leave it; **Save** commits a durable local change even while
-offline. Server reporting requires reachable server data. See
-[offline implementation status](docs/offline-implementation-status.md) for the
-tested paths and remaining protocol limits.
+offline. Server reporting requires reachable server data.
 
 ## Build and check
 
@@ -46,7 +44,7 @@ does not make that laptop's localhost reachable.
 ## Project workflow
 
 Pull requests and pushes to `main` run Android lint, JVM tests, and debug and
-release builds in GitHub Actions. Use Conventional Commit subjects, for example
-`fix(sync): preserve queued product references`. See [releasing](docs/RELEASING.md)
-for versioning, signing, and release checks. Device smoke tests live in
+unsigned release builds in GitHub Actions. Use Conventional Commit subjects, for example
+`fix(sync): preserve queued product references`. See [contributor guidance](CONTRIBUTING.md)
+for the project structure and code patterns. Device smoke tests live in
 [maestro](maestro/README.md).
