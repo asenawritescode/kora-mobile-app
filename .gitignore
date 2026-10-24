@@ -1,0 +1,25 @@
+.gradle/
+.kotlin/
+**/build/
+.idea/
+*.iml
+local.properties
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p12
+*.pem
+*.apk
+*.aab
+
+# Local device and design evidence
+.maestro/
+maestro/legacy/
+audit/
+*.hprof
+*.log
+.DS_Store

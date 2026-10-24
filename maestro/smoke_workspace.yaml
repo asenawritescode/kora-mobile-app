@@ -1,0 +1,9 @@
+appId: com.kora.mobile
+---
+# Requires an authenticated workspace already downloaded on the device.
+- launchApp
+- assertVisible: "Home"
+- tapOn: "Browse"
+- assertVisible: "Search records and areas"
+- tapOn: "Home"
+- assertVisible: "Browse records"
