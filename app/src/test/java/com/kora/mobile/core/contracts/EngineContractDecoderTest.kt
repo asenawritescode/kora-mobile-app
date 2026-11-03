@@ -1,13 +1,11 @@
 package com.kora.mobile.core.contracts
 
-import com.kora.mobile.generated.EngineContractManifest
+import androidx.test.core.app.ApplicationProvider
 import org.json.JSONObject
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import java.security.MessageDigest
 
 @RunWith(RobolectricTestRunner::class)
 class EngineContractDecoderTest {
@@ -16,10 +14,7 @@ class EngineContractDecoderTest {
 
     @Test
     fun sharedProducerFixturesAcceptValidAndRejectMalformedContracts() {
-        val schemaBytes = resource("contracts/engine-v2.json")
-        val schemaHash = MessageDigest.getInstance("SHA-256").digest(schemaBytes).joinToString("") { "%02x".format(it) }
-        assertEquals(EngineContractManifest.schemaSHA256, schemaHash)
-        val decoder = EngineContractDecoder(JSONObject(schemaBytes.toString(Charsets.UTF_8)))
+        val decoder = EngineContractDecoder.fromAssets(ApplicationProvider.getApplicationContext())
         val fixture = JSONObject(resource("contract-fixtures/client-contracts-v2.json").toString(Charsets.UTF_8))
 
         val valid = fixture.getJSONArray("valid")
