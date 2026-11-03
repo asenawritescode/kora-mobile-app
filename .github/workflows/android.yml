@@ -14,6 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Read Engine contract revision
+        id: engine-contract
+        run: |
+          revision=$(sed -n 's/^[[:space:]]*const val sourceRevision = "\([a-f0-9]\{40\}\)"/\1/p' app/src/main/java/com/kora/mobile/generated/EngineContractManifest.kt)
+          test -n "$revision"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: asenawritescode/kora
+          ref: ${{ steps.engine-contract.outputs.revision }}
+          path: engine
+      - name: Check Android contract against Engine producer
+        run: python3 scripts/check-engine-contracts.py --engine-root engine
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
