@@ -22,6 +22,11 @@ class OutboxSyncWorker(context: Context, params: WorkerParameters) : CoroutineWo
             inputData.getString("origin") ?: return Result.failure(),
             inputData.getString("site"),
             inputData.getString("actor") ?: return Result.failure(),
+            com.kora.mobile.domain.model.BusinessScope(
+                inputData.getString("tenant") ?: return Result.failure(),
+                inputData.getString("scope_kind") ?: "tenant",
+                inputData.getString("legal_entity"),
+            ),
         )
         if (!app.isActiveScope(scope)) return Result.success()
 
@@ -40,7 +45,9 @@ class OutboxSyncWorker(context: Context, params: WorkerParameters) : CoroutineWo
         fun schedule(context: Context, scope: Scope) {
             val request = OneTimeWorkRequestBuilder<OutboxSyncWorker>()
                 .setInputData(Data.Builder().putString("instance", scope.instanceId).putString("origin", scope.origin)
-                    .putString("site", scope.siteRef).putString("actor", scope.userId).build())
+                    .putString("site", scope.siteRef).putString("actor", scope.userId)
+                    .putString("tenant", scope.businessScope.tenantId).putString("scope_kind", scope.businessScope.kind)
+                    .putString("legal_entity", scope.businessScope.legalEntityId).build())
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()

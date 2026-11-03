@@ -152,6 +152,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val user = parseUser(app.workspace.currentUser(loginScope))
             scope = Scope(instance.id, instance.origin, instance.siteRef, user.name)
             val activeScope = scope!!
+            app.workspace.bindAnonymousSession(loginScope, activeScope)
             app.activateScope(activeScope)
             app.workspace.clearDrafts(activeScope)
             app.getSharedPreferences("kora_session", 0).edit().putString("last_user", user.name).putString("last_email", user.email).putString("last_full_name", user.fullName).apply()
