@@ -2,7 +2,7 @@ package com.kora.mobile.data
 
 import com.kora.mobile.core.database.LocalDao
 import com.kora.mobile.core.database.LocalEntry
-import com.kora.mobile.core.database.LocalMutation
+import com.kora.mobile.core.database.OfflineIntentEntity
 import com.kora.mobile.core.database.KoraDatabase
 import com.kora.mobile.data.offline.OfflineRecordRepository
 import com.kora.mobile.data.offline.RestRecordDataSource
@@ -31,7 +31,7 @@ import org.json.JSONTokener
 
 class WorkspaceRepository(private val http: KoraHttpClient, private val db: KoraDatabase, private val vault: PayloadCipher, private val decoder: EngineContractDecoder, private val canSync: (Scope) -> Boolean = { true }) {
     private val dao = db.localDao
-    val localRecords = OfflineRecordRepository(db, vault, RestRecordDataSource(http), canSync = canSync)
+    val localRecords = OfflineRecordRepository(db, vault, RestRecordDataSource(http), decoder, canSync = canSync)
     private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val refreshJobs = ConcurrentHashMap<String, Job>()
     private val _offline = MutableStateFlow(false)
@@ -63,6 +63,7 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
         val response = network { http.getResponse(scope, "/api/v2/modules/catalog") }
         val catalog = decoder.decodeApplicationCatalog(response.body.toString())
         require(catalog.businessScope == scope.businessScope) { "Engine catalog scope does not match the active workspace" }
+        localRecords.rememberCatalog(scope, catalog)
         return catalog
     }
 
@@ -128,6 +129,20 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
         }
     }
 
+    suspend fun queuePublishedIntent(scope: Scope, catalog: EngineApplicationCatalog, operation: EnginePublishedOperation, input: Any, idempotencyKey: String): String =
+        enqueuePublishedIntent(scope, catalog, operation, input, idempotencyKey)
+
+    suspend fun syncPublishedIntents(scope: Scope, catalog: EngineApplicationCatalog) = localRecords.sync(scope, catalog)
+    suspend fun syncPublishedIntents(scope: Scope) = localRecords.observeCatalogThenSync(scope)
+    suspend fun bootstrapPublishedFeed(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any, limit: Int? = null): JSONObject =
+        localRecords.bootstrap(scope, catalog, query, input, limit)
+    suspend fun pullPublishedFeed(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any, checkpoint: JSONObject, limit: Int = 100): JSONObject =
+        localRecords.pull(scope, catalog, query, input, checkpoint, limit)
+    suspend fun savedPublishedFeedCheckpoint(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any): JSONObject? =
+        localRecords.savedCheckpoint(scope, catalog, query, input)
+    suspend fun hasPendingPublishedIntents(scope: Scope): Boolean = localRecords.hasPending(scope)
+    fun observePublishedIntents(scope: Scope): Flow<List<OfflineIntentEntity>> = localRecords.observeIntents(scope)
+
     private fun validatePublishedValue(catalog: EngineApplicationCatalog, ref: com.kora.mobile.core.contracts.EngineSchemaRef, value: Any) {
         val document = catalog.schemas.singleOrNull { it.ref == ref }?.schema
             ?: throw IllegalArgumentException("The actor catalog did not publish schema ${ref.id} v${ref.version}")
@@ -150,40 +165,12 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
     suspend fun pageManifest(scope: Scope, route: String): JSONObject = cached(scope, "page-manifest:$route", "navigation") {
         http.get(scope, "/api/v1/page-manifests", mapOf("route" to route)) as? JSONObject ?: JSONObject()
     } as? JSONObject ?: JSONObject()
-    suspend fun executeViewAction(scope: Scope, actionId: String, view: String, component: String, context: JSONObject, idempotencyKey: String? = null): JSONObject {
-        return http.post(scope, "/api/v1/view/action/$actionId", JSONObject()
-            .put("view", view).put("component", component).put("context", context), idempotencyKey) as? JSONObject ?: JSONObject()
-    }
     suspend fun records(scope: Scope, doctype: String): JSONArray {
-        val local = localRecords.records(scope, doctype)
-        if (localRecords.isCovered(scope, doctype)) {
-            refresh("${scope.key}:pull") { localRecords.pull(scope) }
-            return local
-        }
-        if (local.length() > 0 || dao.getEntry(scope.key, "records-downloaded:$doctype") != null || dao.getEntry(scope.key, "records:$doctype") != null) {
-            refresh("${scope.key}:records:$doctype") { localRecords.refresh(scope, doctype) }
-            return local
-        }
-        network { localRecords.refresh(scope, doctype) }
-        return localRecords.records(scope, doctype)
+        throw IllegalStateException("Legacy DocType records are unavailable. Load a published module query instead.")
     }
-    fun observeRecords(scope: Scope, doctype: String): Flow<List<JSONObject>> = localRecords.observeRecords(scope, doctype)
+    fun observeRecords(scope: Scope, doctype: String): Flow<List<JSONObject>> = kotlinx.coroutines.flow.flowOf(emptyList())
     suspend fun record(scope: Scope, doctype: String, name: String): JSONObject {
-        val local = localRecords.record(scope, doctype, name)
-        if (localRecords.isCovered(scope, doctype)) {
-            if (local != null) {
-                refresh("${scope.key}:pull") { localRecords.pull(scope) }
-                return local
-            }
-            network { localRecords.pull(scope) }
-            return localRecords.record(scope, doctype, name) ?: throw IllegalStateException("Record not available on this device")
-        }
-        if (local != null) {
-            refresh("${scope.key}:record:$doctype:$name") { localRecords.refreshRecord(scope, doctype, name) }
-            return local
-        }
-        network { localRecords.refreshRecord(scope, doctype, name) }
-        return localRecords.record(scope, doctype, name) ?: throw IllegalStateException("Record not available on this device")
+        throw IllegalStateException("Legacy DocType records are unavailable. Load a published module query instead.")
     }
     suspend fun userDirectory(scope: Scope, names: List<String>): JSONArray {
         if (names.isEmpty()) return JSONArray()
@@ -239,43 +226,7 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
         return fetchAndStore()
     }
 
-    // Legacy draft rows are removed when a workspace opens. Submitted offline records use the outbox.
-    suspend fun clearDrafts(scope: Scope) = dao.clearDrafts(scope.key)
-    suspend fun submitRecord(scope: Scope, doctype: String, recordName: String?, payload: JSONObject, idempotencyKey: String) {
-        enqueueRecord(scope, doctype, recordName, payload, idempotencyKey, null)
-    }
-
-    fun queuedMutations(scope: Scope): Flow<List<LocalMutation>> = dao.observeMutations(scope.key).map { rows -> rows.map(::withDisplayName) }
-
-    suspend fun enqueueRecord(scope: Scope, doctype: String, recordName: String?, payload: JSONObject, idempotencyKey: String, displayName: String?, draftId: String? = null) {
-        localRecords.save(scope, doctype, recordName, payload, idempotencyKey, displayName, draftId ?: "$doctype:${recordName ?: "new"}")
-    }
-
-    private fun withDisplayName(mutation: LocalMutation): LocalMutation {
-        if (!mutation.displayName.isNullOrBlank()) return mutation
-        val payload = vault.decrypt(mutation.encryptedPayload)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return mutation
-        val displayName = listOf("title", "product_name", "reference", "customer_name", "supplier_name", "name")
-            .firstNotNullOfOrNull { key -> payload.optString(key).takeIf(String::isNotBlank) }
-        return mutation.copy(displayName = displayName)
-    }
-
-    suspend fun copyMutation(mutation: LocalMutation, targetScopeKey: String) {
-        dao.putMutation(mutation.copy(scopeKey = targetScopeKey))
-    }
-    suspend fun deleteMutation(scope: Scope, id: String) {
-        dao.deleteMutation(scope.key, id)
-    }
-    suspend fun moveQueuedMutations(from: Scope, to: Scope): Int {
-        if (from.key == to.key) return 0
-        val rows = dao.queuedMutations(from.key)
-        rows.forEach { dao.putMutation(it.copy(scopeKey = to.key)) }
-        rows.forEach { dao.deleteMutation(from.key, it.id) }
-        return rows.size
-    }
-
-    suspend fun enqueueViewAction(scope: Scope, actionId: String, request: JSONObject, idempotencyKey: String, recordType: String = "sale", projection: JSONObject? = null, effect: JSONObject? = null, draftId: String? = null) {
-        val context = request.optJSONObject("context") ?: JSONObject()
-        localRecords.saveAction(scope, actionId, request, idempotencyKey, recordType, projection ?: JSONObject(context.toString()).put("items", context.optJSONArray("cart") ?: JSONArray()), effect, draftId)
-    }
+    suspend fun enqueuePublishedIntent(scope: Scope, catalog: EngineApplicationCatalog, operation: EnginePublishedOperation, input: Any, idempotencyKey: String, expectedRevision: String? = null): String =
+        localRecords.enqueue(scope, catalog, operation, input, idempotencyKey, expectedRevision)
 
 }

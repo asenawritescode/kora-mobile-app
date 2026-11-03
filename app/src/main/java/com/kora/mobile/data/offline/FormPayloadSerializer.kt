@@ -19,7 +19,7 @@ object FormPayloadSerializer {
                         for (i in 0 until rows.length()) {
                             val row = rows.optJSONObject(i) ?: continue
                             val schema = childSchemas[field.options].orEmpty()
-                            val clean = if (schema.isEmpty()) OfflineRecordRepository.stripLocalMetadata(row) else serialize(schema, row.keys().asSequence().associateWith { row.opt(it) }, childSchemas, draft, isNew = row.optString("name").isBlank() || row.optString("name").startsWith("local:"))
+                            val clean = if (schema.isEmpty()) JSONObject(row.toString()) else serialize(schema, row.keys().asSequence().associateWith { row.opt(it) }, childSchemas, draft, isNew = row.optString("name").isBlank() || row.optString("name").startsWith("local:"))
                             row.optString("name").takeIf { it.isNotBlank() && !it.startsWith("local:") }?.let { clean.put("name", it) }
                             put(clean)
                         }

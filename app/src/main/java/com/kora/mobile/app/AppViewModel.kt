@@ -7,6 +7,11 @@ import android.net.NetworkCapabilities
 import com.kora.mobile.data.offline.FormPayloadSerializer
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.kora.mobile.KoraApplication
 import com.kora.mobile.core.contracts.EngineApplicationCatalog
 import com.kora.mobile.core.contracts.EngineOperationReceipt
@@ -14,6 +19,7 @@ import com.kora.mobile.core.contracts.EnginePublishedOperation
 import com.kora.mobile.core.contracts.EnginePublishedProjection
 import com.kora.mobile.core.contracts.EnginePublishedQuery
 import com.kora.mobile.core.contracts.EngineQueryPage
+import com.kora.mobile.core.database.OfflineIntentEntity
 import com.kora.mobile.domain.model.Branding
 import com.kora.mobile.domain.model.CurrentUser
 import com.kora.mobile.domain.model.DocTypeNavItem
@@ -31,6 +37,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import androidx.work.workDataOf
+import com.kora.mobile.OutboxSyncWorker
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
@@ -87,6 +95,7 @@ data class AppState(
     val resolvingMutationId: String? = null,
     val requests: List<JSONObject> = emptyList(),
     val offline: Boolean = false,
+    val offlineIntents: List<OfflineIntentEntity> = emptyList(),
     val posManifest: JSONObject? = null,
     val posLoading: Boolean = false,
     val posProducts: List<JSONObject> = emptyList(),
@@ -113,6 +122,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<AppState> = _state.asStateFlow()
     private var scope: Scope? = null
     private var recordRowsJob: Job? = null
+    private var offlineIntentsJob: Job? = null
     private val connectivityManager = app.getSystemService(ConnectivityManager::class.java)
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -168,6 +178,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val user = parseUser(app.workspace.currentUser(loginScope))
             scope = Scope(instance.id, instance.origin, instance.siteRef, user.name)
             val activeScope = scope!!
+            observeOfflineIntents(activeScope)
             app.workspace.bindAnonymousSession(loginScope, activeScope)
             app.activateScope(activeScope)
             app.getSharedPreferences("kora_session", 0).edit().putString("last_user", user.name).putString("last_email", user.email).putString("last_full_name", user.fullName).apply()
@@ -237,11 +248,51 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val input = parseJsonValue(_state.value.operationInput)
             val idempotencyKey = _state.value.operationIdempotencyKey.ifBlank { java.util.UUID.randomUUID().toString() }
             _state.update { it.copy(operationIdempotencyKey = idempotencyKey, operationMayHaveRun = true) }
+            if (!app.workspace.networkAvailable && operation.offlineEligible && operation.availability == "available") {
+                app.workspace.queuePublishedIntent(active, catalog, operation, input, idempotencyKey)
+                enqueueIntentSync(active)
+                _state.update { it.copy(surfaceLoading = false, operationMayHaveRun = false, surfaceError = null, message = "Action saved on this device. It will sync when connected.") }
+                return@launch
+            }
             val receipt = app.workspace.submitPublishedOperation(active, catalog, operation, input, idempotencyKey)
             _state.update { it.copy(operationReceipt = receipt, surfaceLoading = false, operationMayHaveRun = receipt.status in setOf("accepted", "running", "outcome_unknown"), surfaceError = if (receipt.status in setOf("rejected", "conflict", "failed", "outcome_unknown")) receipt.errorMessage ?: "Operation status: ${receipt.status}" else null) }
         } catch (error: Exception) {
             val uncertain = (error as? com.kora.mobile.domain.model.KoraError)?.retryable == true
+            if (uncertain && operation.offlineEligible && operation.availability == "available") {
+                try {
+                    app.workspace.queuePublishedIntent(active, catalog, operation, parseJsonValue(_state.value.operationInput), _state.value.operationIdempotencyKey)
+                    enqueueIntentSync(active)
+                    _state.update { it.copy(surfaceLoading = false, operationMayHaveRun = true, surfaceError = "The result is uncertain. The saved intent will recover by the same idempotency key.") }
+                    return@launch
+                } catch (_: Exception) { /* Keep the original uncertainty visible if durable storage failed. */ }
+            }
             _state.update { it.copy(surfaceLoading = false, operationMayHaveRun = uncertain, surfaceError = if (uncertain) "The response was not received. The action may have run; check its receipt before retrying." else error.message ?: "The action was not accepted") }
+        }
+    }
+
+    private fun enqueueIntentSync(active: Scope) {
+        val request = OneTimeWorkRequestBuilder<OutboxSyncWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setInputData(workDataOf("scope_key" to active.key)).build()
+        WorkManager.getInstance(app).enqueueUniqueWork("offline-intents:${active.key}", ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+    }
+
+    private fun observeOfflineIntents(active: Scope) {
+        offlineIntentsJob?.cancel()
+        offlineIntentsJob = viewModelScope.launch {
+            app.workspace.observePublishedIntents(active).collect { rows ->
+                if (scope?.key == active.key) _state.update { it.copy(offlineIntents = rows) }
+            }
+        }
+    }
+
+    fun syncOfflineIntents() {
+        val active = scope ?: return
+        val catalog = _state.value.publishedCatalog ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, message = null) }
+            val result = runCatching { app.workspace.syncPublishedIntents(active, catalog) }.getOrNull()
+            _state.update { it.copy(busy = false, message = result?.error?.message ?: if (result == null) "Could not sync saved actions" else "Sync checked ${result.acknowledged} completed action(s)") }
         }
     }
 
@@ -515,21 +566,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun java.math.BigDecimal?.orZero() = this ?: java.math.BigDecimal.ZERO
 
     private suspend fun queueViewActionForSync(active: Scope, actionId: String, request: JSONObject, idempotencyKey: String, saleType: String, projection: JSONObject, effect: JSONObject?) {
-        try {
-            app.workspace.enqueueViewAction(active, actionId, request, idempotencyKey, saleType, projection, effect)
-            val products = effect?.optString("doctype")?.takeIf(String::isNotBlank)
-                ?.let { type -> runCatching { app.workspace.records(active, type) }.getOrNull() }
-            _state.update { current ->
-                current.copy(
-                    posSaving = false,
-                    posCart = emptyMap(),
-                    posProducts = products?.let { rows -> (0 until rows.length()).mapNotNull(rows::optJSONObject) } ?: current.posProducts,
-                    message = "Sale saved",
-                )
-            }
-        } catch (error: Exception) {
-            _state.update { it.copy(posSaving = false, message = error.message ?: "Could not save sale on this device") }
-        }
+        _state.update { it.copy(posSaving = false, message = "This POS action is not available offline until its module publishes an operation contract") }
     }
 
     private fun resourceRoute(doctype: String): String = _state.value.navigation?.modules?.flatMap { it.doctypes }
@@ -546,6 +583,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(selectedDoctype = item, selectedRecord = null, section = "Work", formOpen = false, formValues = emptyMap(), listSearch = "", busy = true, message = null) }
         val active = scope ?: return@launch
         try {
+            throw IllegalStateException("This legacy record surface is read-only until its module publishes a query and operation")
+            @Suppress("UNREACHABLE_CODE")
             val records = app.workspace.records(active, item.resourceName)
             val recordsCached = app.workspace.lastResponseWasCached
             val schema = app.workspace.schema(active, item.resourceName)
@@ -751,30 +790,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val titleField = _state.value.titleField
             val displayName = payload.optString(titleField).ifBlank { payload.optString("reference") }.ifBlank { null }
             val correction = _state.value.resolvingMutationId
-            if (correction != null) app.workspace.localRecords.correct(active, correction, payload, null)
+            if (correction != null) throw IllegalStateException("This legacy record has no published operation contract for correction")
             else {
-                val schema = app.workspace.schema(active, doctype).optJSONObject("doctype")
-                    ?: throw IllegalStateException("Download this record definition before saving")
-                val binding = if (name == null) schema.optJSONObject("quantity_effect") else null
-                if (binding == null) app.workspace.enqueueRecord(active, doctype, name, payload, idempotencyKey, displayName)
-                else {
-                    val recordField = binding.optString("source_record_field")
-                    val deltaField = binding.optString("delta_field")
-                    val reasonField = binding.optString("reason_field")
-                    val targetType = binding.optString("target_doctype")
-                    val quantityField = binding.optString("target_quantity_field")
-                    val actionId = binding.optString("action")
-                    val delta = payload.optString(deltaField).toBigDecimalOrNull()
-                    val target = payload.optString(recordField)
-                    if (delta == null || delta.signum() == 0 || target.isBlank() || payload.optString(reasonField).isBlank() || targetType.isBlank() || quantityField.isBlank() || actionId.isBlank()) {
-                        throw IllegalArgumentException("Choose a record, enter a signed quantity, and give a reason")
-                    }
-                    val effect = JSONObject().put("doctype", resourceRoute(targetType)).put("quantity_field", quantityField)
-                        .put("lines", JSONArray().put(JSONObject().put("name", target).put("quantity", delta.negate().toPlainString())))
-                    val request = JSONObject().put("view", binding.optString("view"))
-                        .put("component", binding.optString("component")).put("context", payload)
-                    app.workspace.enqueueViewAction(active, actionId, request, idempotencyKey, doctype, payload, effect)
-                }
+                throw IllegalStateException("This legacy record is read-only until its module publishes an operation contract")
             }
             _state.update {
                 it.copy(busy = false, editingRecord = null, formOpen = false, formValues = emptyMap(),
@@ -790,6 +808,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val previous = scope
         scope = null
         recordRowsJob?.cancel()
+        offlineIntentsJob?.cancel()
         app.getSharedPreferences("kora_session", 0).edit().clear().apply()
         _state.update { AppState(stage = AppStage.SERVER, serverUrl = app.instanceStore.current().origin, siteRef = app.instanceStore.current().siteRef.orEmpty()) }
         previous?.let { app.workspace.logout(it) }
@@ -820,8 +839,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(stage = AppStage.SERVER, message = "Enter a Site ID before signing in") }
             return@launch
         }
-        val restored = Scope(instance.id, instance.origin, instance.siteRef, userId)
+        val businessScope = runCatching {
+            val kind = saved.getString("active_scope_kind", "tenant").orEmpty()
+            if (kind == "legal_entity") com.kora.mobile.domain.model.BusinessScope(
+                saved.getString("active_tenant_id", null) ?: throw IllegalArgumentException("Missing tenant scope"),
+                kind,
+                saved.getString("active_legal_entity_id", null) ?: throw IllegalArgumentException("Missing legal entity scope"),
+            ) else com.kora.mobile.domain.model.BusinessScope(saved.getString("active_tenant_id", instance.siteRef).orEmpty())
+        }.getOrElse { com.kora.mobile.domain.model.BusinessScope(instance.siteRef.orEmpty()) }
+        val restored = Scope(instance.id, instance.origin, instance.siteRef, userId, businessScope)
         scope = restored
+        observeOfflineIntents(restored)
         app.activateScope(restored)
         // Restore the locally authenticated workspace immediately. Network validation runs separately.
         val cachedUser = CurrentUser(userId, saved.getString("last_email", "").orEmpty(), saved.getString("last_full_name", "Your workspace").orEmpty())
@@ -848,6 +876,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val savedTheme = app.getSharedPreferences("kora_preferences", 0).getString("theme_mode", null)
             val themeMode = (savedTheme ?: tenantBranding?.defaultMode ?: "system").lowercase()
             _state.update { it.copy(navigation = null, publishedCatalog = catalog, selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, tenantBranding = tenantBranding, themeMode = themeMode, posManifest = null, offline = catalogCached || app.workspace.lastResponseWasCached, message = null, surfaceError = null) }
+            if (app.workspace.hasPendingPublishedIntents(active)) enqueueIntentSync(active)
         } catch (error: Exception) { _state.update { it.copy(publishedCatalog = null, selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, offline = true, message = null, surfaceError = error.message ?: "Published workspace catalog could not be loaded") } }
     }
 

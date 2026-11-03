@@ -25,7 +25,12 @@ class KoraApplication : Application() {
     }
 
     fun activateScope(scope: Scope) {
-        getSharedPreferences("kora_session", MODE_PRIVATE).edit().putString("active_scope", scope.key).apply()
+        getSharedPreferences("kora_session", MODE_PRIVATE).edit()
+            .putString("active_scope", scope.key)
+            .putString("active_tenant_id", scope.businessScope.tenantId)
+            .putString("active_scope_kind", scope.businessScope.kind)
+            .putString("active_legal_entity_id", scope.businessScope.legalEntityId)
+            .apply()
     }
 
     fun isActiveScope(scope: Scope): Boolean = getSharedPreferences("kora_session", MODE_PRIVATE).getString("active_scope", null) == scope.key
