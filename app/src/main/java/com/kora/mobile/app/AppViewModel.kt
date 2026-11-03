@@ -901,13 +901,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun respondToRequest(request: JSONObject, response: String) = viewModelScope.launch {
         val active = scope ?: return@launch
         val requestId = request.optString("id")
-        val assignment = request.optJSONArray("assignments")?.optJSONObject(0)
+        val assignments = request.optJSONArray("assignments")
+        val assignment = assignments?.let { rows -> (0 until rows.length()).mapNotNull(rows::optJSONObject).firstOrNull { it.optString("status") == "pending" } }
         val assignmentId = assignment?.optString("id").orEmpty()
-        if (requestId.isBlank() || assignmentId.isBlank()) { _state.update { it.copy(message = "This request has no active assignment to respond to") }; return@launch }
-        val key = java.util.UUID.randomUUID().toString()
+        if (requestId.isBlank() || assignmentId.isBlank()) { _state.update { it.copy(message = "This request has no pending assignment to respond to") }; return@launch }
+        val key = stableCommandKey("request:${requestId}:${request.optString("revision")}:$assignmentId:$response")
         _state.update { it.copy(workflowBusy = true, message = null) }
         try {
-            val receipt = app.workspace.respondToRequest(active, requestId, assignmentId, response, idempotencyKey = key)
+            val receipt = app.workspace.respondToRequest(active, requestId, assignmentId, request.optString("revision"), response, idempotencyKey = key)
             _state.update { it.copy(workflowBusy = false, message = "Response ${receipt.status.replace('_', ' ')}${receipt.continuationState?.let { state -> " · follow-up $state" }.orEmpty()}") }
             loadRequests()
         } catch (error: Exception) { _state.update { it.copy(workflowBusy = false, message = error.message ?: "Request response could not be confirmed") } }
@@ -936,12 +937,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } catch (error: Exception) { _state.update { it.copy(workflowError = error.message ?: "Workflow history is unavailable") } }
     }
 
-    fun startWorkflow(definition: EngineWorkflowDefinitionRef, subjectType: String, subjectId: String) = viewModelScope.launch {
+    fun startWorkflow(definition: EngineWorkflowDefinitionRef, subjectType: String, subjectId: String, idempotencyKey: String, onStarted: () -> Unit = {}) = viewModelScope.launch {
         val active = scope ?: return@launch
         _state.update { it.copy(workflowBusy = true, workflowError = null) }
         try {
-            app.workspace.startWorkflow(active, definition.id, definition.version, subjectType, subjectId, java.util.UUID.randomUUID().toString())
-            _state.update { it.copy(workflowBusy = false, message = "Workflow started") }; loadWorkflowInstances()
+            app.workspace.startWorkflow(active, definition.id, definition.version, subjectType, subjectId, idempotencyKey)
+            _state.update { it.copy(workflowBusy = false, message = "Workflow started") }; onStarted(); loadWorkflowInstances()
         } catch (error: Exception) { _state.update { it.copy(workflowBusy = false, workflowError = error.message ?: "Workflow could not be started") } }
     }
 
@@ -949,7 +950,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val active = scope ?: return@launch
         _state.update { it.copy(workflowBusy = true, workflowError = null) }
         try {
-            app.workspace.reconcileWorkflow(active, id, stepId, outcome, evidenceRef, reason, java.util.UUID.randomUUID().toString())
+            val revision = _state.value.workflowInstances.firstOrNull { it.id == id }?.revision ?: throw IllegalStateException("Refresh workflow status before reconciling")
+            app.workspace.reconcileWorkflow(active, id, revision, stepId, outcome, evidenceRef, reason, stableCommandKey("reconcile:$id:$revision:$stepId:$outcome:$evidenceRef:$reason"))
             _state.update { it.copy(workflowBusy = false) }; loadWorkflowInstances()
         } catch (error: Exception) { _state.update { it.copy(workflowBusy = false, workflowError = error.message ?: "Workflow outcome could not be reconciled") } }
     }
@@ -958,10 +960,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val active = scope ?: return@launch
         _state.update { it.copy(workflowBusy = true, workflowError = null) }
         try {
-            app.workspace.cancelWorkflow(active, id, reason, java.util.UUID.randomUUID().toString())
+            val revision = _state.value.workflowInstances.firstOrNull { it.id == id }?.revision ?: throw IllegalStateException("Refresh workflow status before cancelling")
+            app.workspace.cancelWorkflow(active, id, revision, reason, stableCommandKey("cancel:$id:$revision:$reason"))
             _state.update { it.copy(workflowBusy = false) }; loadWorkflowInstances()
         } catch (error: Exception) { _state.update { it.copy(workflowBusy = false, workflowError = error.message ?: "Workflow could not be cancelled") } }
     }
+
+    private fun stableCommandKey(command: String): String = java.util.UUID.nameUUIDFromBytes(command.toByteArray(Charsets.UTF_8)).toString()
 
     private fun parseUser(raw: JSONObject): CurrentUser {
         val obj = raw.optJSONObject("data") ?: raw

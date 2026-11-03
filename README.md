@@ -7,17 +7,21 @@ repository contains the mobile app; the Kora Engine is a separate project.
 
 - Connect to `https://api.kora.mradiafrica.com` by default, or select another
   instance. A Site ID is required before sign-in.
-- Download an authorized workspace for offline access.
-- Browse cached records and create or edit supported records while disconnected.
-- Use the configured retail POS and Stock Adjustment action offline. Submitted
-  changes are saved on the device, then sent in order when the server is reachable.
-- Review pending, rejected, and conflicting changes in **Offline & sync**. The
-  server remains authoritative for permissions, scripts, validation, and final
-acceptance.
+- Load actor authorized published queries, projections, operations, requests and
+  workflow definitions from Engine.
+- Queue an offline action only when Engine publishes it as offline eligible.
+  Online only actions require a connection and a completed Engine receipt before
+  the app reports success.
+- Review saved domain intents in **Offline & sync**. Uncertain operations retain
+  their idempotency key for receipt lookup; never submit a second key to repeat
+  an action whose outcome is unknown.
+- Browse previously synchronized data with its freshness state. Writes through
+  legacy DocType record screens and POS view actions remain unavailable until
+  their modules publish supported queries and operations.
 
-Initial sign-in and workspace download require a connection. An unsaved form is
-discarded when you leave it; **Save** commits a durable local change even while
-offline. Server reporting requires reachable server data.
+Initial sign-in, catalog refresh, workflow/request actions and server reporting
+require a connection. Do not treat a timeout as proof that a payment or other
+business operation did not happen; check its Engine receipt before retrying.
 
 ## Build and check
 

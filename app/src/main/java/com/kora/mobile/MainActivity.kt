@@ -1910,13 +1910,15 @@ private fun RequestsScreen(state: AppState, vm: AppViewModel) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(status.replace('_', ' '), color = androidx.compose.material3.MaterialTheme.colorScheme.primary, fontSize = 11.sp) }
                     if (message.isNotBlank()) Text(message, Modifier.padding(top = 5.dp), color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    val assignment = request.optJSONArray("assignments")?.optJSONObject(0)
+                    val assignments = request.optJSONArray("assignments")
+                    val assignment = assignments?.let { rows -> (0 until rows.length()).mapNotNull(rows::optJSONObject).firstOrNull { it.optString("status") == "pending" } }
                     val responses = request.optJSONArray("allowed_responses")
                     if (assignment != null && responses != null && responses.length() > 0) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 10.dp)) {
-                            (0 until responses.length()).take(2).forEach { index ->
+                            (0 until responses.length()).forEach { index ->
                                 val answer = responses.optString(index)
-                                OutlinedButton(onClick = { vm.respondToRequest(request, answer) }, enabled = !state.workflowBusy) { Text(answer.replace('_', ' ').replaceFirstChar { it.uppercase() }) }
+                                if (answer == "provide_information") Text("Information response requires its published schema form.", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                                else OutlinedButton(onClick = { vm.respondToRequest(request, answer) }, enabled = !state.workflowBusy) { Text(answer.replace('_', ' ').replaceFirstChar { it.uppercase() }) }
                             }
                         }
                     }
@@ -1927,18 +1929,21 @@ private fun RequestsScreen(state: AppState, vm: AppViewModel) {
         item { OutlinedButton(onClick = vm::refreshWorkflowDefinitions, enabled = !state.workflowBusy, modifier = Modifier.fillMaxWidth()) { Text("Load available workflows") } }
         if (state.workflowError != null) item { MessageBanner(state.workflowError, state.offline) }
         items(state.workflowDefinitions, key = { "definition:${it.id}:${it.version}" }) { definition ->
-            var subjectId by remember(definition.id, definition.version) { mutableStateOf("") }
+            var subjectId by rememberSaveable(definition.id, definition.version) { mutableStateOf("") }
+            var startKey by rememberSaveable(definition.id, definition.version, subjectId) { mutableStateOf(java.util.UUID.randomUUID().toString()) }
             Card(shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                     Text(definition.id, fontWeight = FontWeight.SemiBold)
                     Text("v${definition.version} · ${definition.digest.take(12)}", fontSize = 11.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedTextField(subjectId, { subjectId = it }, label = { Text("Subject ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedButton(onClick = { vm.startWorkflow(definition, "record", subjectId.trim()) }, enabled = !state.workflowBusy && subjectId.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start workflow") }
+                    OutlinedButton(onClick = { vm.startWorkflow(definition, "record", subjectId.trim(), startKey) { startKey = java.util.UUID.randomUUID().toString() } }, enabled = !state.workflowBusy && subjectId.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start workflow") }
                 }
             }
         }
         if (state.workflowInstances.isEmpty()) item { EmptyCard("No recent workflows", "Workflow status will appear here when this workspace has activity.") }
         items(state.workflowInstances, key = { it.id }) { workflow ->
+            var reason by remember(workflow.id) { mutableStateOf("") }
+            var evidence by remember(workflow.id) { mutableStateOf("") }
             Card(shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) { Text(workflow.definitionId, Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(workflow.status.replace('_', ' '), color = androidx.compose.material3.MaterialTheme.colorScheme.primary, fontSize = 11.sp) }
@@ -1949,6 +1954,19 @@ private fun RequestsScreen(state: AppState, vm: AppViewModel) {
                     state.workflowHistory[workflow.id].orEmpty().forEach { event ->
                         Text("${event.optString("step_id")} · ${event.optString("kind")} · ${event.optString("status")}", fontSize = 11.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
                         if (event.optString("detail").isNotBlank()) Text(event.optString("detail"), fontSize = 11.sp)
+                    }
+                    if (workflow.status == "outcome_unknown") {
+                        OutlinedTextField(evidence, { evidence = it }, label = { Text("Evidence reference") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(reason, { reason = it }, label = { Text("Reconciliation reason") }, modifier = Modifier.fillMaxWidth())
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("confirmed_succeeded", "confirmed_not_applied", "abandon").forEach { outcome ->
+                                OutlinedButton(onClick = { vm.reconcileWorkflow(workflow.id, workflow.currentStep, outcome, evidence.trim(), reason.trim()) }, enabled = !state.workflowBusy && reason.isNotBlank() && evidence.isNotBlank()) { Text(outcome.removePrefix("confirmed_").replace('_', ' '), fontSize = 10.sp) }
+                            }
+                        }
+                    }
+                    if (workflow.status in setOf("ready", "running", "waiting", "retrying")) {
+                        OutlinedTextField(reason, { reason = it }, label = { Text("Cancellation reason") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedButton(onClick = { vm.cancelWorkflow(workflow.id, reason.trim()) }, enabled = !state.workflowBusy && reason.isNotBlank()) { Text("Cancel workflow") }
                     }
                 }
             }

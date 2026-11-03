@@ -191,11 +191,11 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
         return response as? JSONArray ?: JSONArray()
     }
     suspend fun schema(scope: Scope, doctype: String): JSONObject = cached(scope, "schema:$doctype", "schema") { http.get(scope, "/api/v1/system/doctype/$doctype") as? JSONObject ?: JSONObject() } as? JSONObject ?: JSONObject()
-    suspend fun requests(scope: Scope): JSONObject = cached(scope, "requests", "requests") { http.get(scope, "/api/v2/requests", mapOf("view" to "needs_action", "kind" to "task", "limit" to "25", "overdue_only" to "false")) as? JSONObject ?: JSONObject() } as? JSONObject ?: JSONObject()
+    suspend fun requests(scope: Scope): JSONObject = cached(scope, "requests", "requests") { http.get(scope, "/api/v2/requests", mapOf("view" to "needs_action", "limit" to "25", "overdue_only" to "false")) as? JSONObject ?: JSONObject() } as? JSONObject ?: JSONObject()
 
-    suspend fun respondToRequest(scope: Scope, requestId: String, assignmentId: String, response: String, comment: String = "", idempotencyKey: String): EngineResponseReceipt {
-        require(idempotencyKey.isNotBlank())
-        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey))
+    suspend fun respondToRequest(scope: Scope, requestId: String, assignmentId: String, expectedRevision: String, response: String, comment: String = "", idempotencyKey: String): EngineResponseReceipt {
+        require(idempotencyKey.isNotBlank() && expectedRevision.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey).put("expected_revision", expectedRevision))
             .put("assignment_id", assignmentId).put("response", response).put("comment", comment)
         val result = network { http.postResponse(scope, "/api/v2/requests/${pathSegment(requestId)}/responses", body, idempotencyKey) }
         return decoder.decodeResponseReceipt(result.body.toString())
@@ -232,17 +232,17 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
     suspend fun workflowHistory(scope: Scope, id: String): JSONArray =
         (network { http.getResponse(scope, "/api/v2/workflow-instances/${pathSegment(id)}/history") }.body as? JSONArray) ?: JSONArray()
 
-    suspend fun reconcileWorkflow(scope: Scope, id: String, stepId: String, outcome: String, evidenceRef: String, reason: String, idempotencyKey: String): EngineWorkflowInstance {
-        require(idempotencyKey.isNotBlank() && reason.isNotBlank())
-        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey))
+    suspend fun reconcileWorkflow(scope: Scope, id: String, expectedRevision: String, stepId: String, outcome: String, evidenceRef: String, reason: String, idempotencyKey: String): EngineWorkflowInstance {
+        require(idempotencyKey.isNotBlank() && expectedRevision.isNotBlank() && evidenceRef.isNotBlank() && reason.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey).put("expected_revision", expectedRevision))
             .put("step_id", stepId).put("outcome", outcome).put("evidence_ref", evidenceRef).put("reason", reason)
         val result = network { http.postResponse(scope, "/api/v2/workflow-instances/${pathSegment(id)}/reconcile", body, idempotencyKey) }
         return decoder.decodeWorkflowInstance(result.body.toString())
     }
 
-    suspend fun cancelWorkflow(scope: Scope, id: String, reason: String, idempotencyKey: String): EngineWorkflowInstance {
-        require(idempotencyKey.isNotBlank() && reason.isNotBlank())
-        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey)).put("reason", reason)
+    suspend fun cancelWorkflow(scope: Scope, id: String, expectedRevision: String, reason: String, idempotencyKey: String): EngineWorkflowInstance {
+        require(idempotencyKey.isNotBlank() && expectedRevision.isNotBlank() && reason.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey).put("expected_revision", expectedRevision)).put("reason", reason)
         val result = network { http.postResponse(scope, "/api/v2/workflow-instances/${pathSegment(id)}/cancel", body, idempotencyKey) }
         return decoder.decodeWorkflowInstance(result.body.toString())
     }
