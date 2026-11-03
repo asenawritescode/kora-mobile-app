@@ -8,7 +8,17 @@ import com.kora.mobile.data.offline.OfflineRecordRepository
 import com.kora.mobile.data.offline.RestRecordDataSource
 import com.kora.mobile.data.offline.OfflineCoverage
 import com.kora.mobile.core.network.KoraHttpClient
-import com.kora.mobile.core.security.SecretVault
+import com.kora.mobile.core.contracts.EngineApplicationCatalog
+import com.kora.mobile.core.contracts.EngineContractDecoder
+import com.kora.mobile.core.contracts.EngineOperationReceipt
+import com.kora.mobile.core.contracts.EnginePublishedOperation
+import com.kora.mobile.core.contracts.EnginePublishedProjection
+import com.kora.mobile.core.contracts.EnginePublishedQuery
+import com.kora.mobile.core.contracts.EngineQueryPage
+import com.kora.mobile.core.contracts.decodeApplicationCatalog
+import com.kora.mobile.core.contracts.decodeOperationReceipt
+import com.kora.mobile.core.contracts.decodeQueryPage
+import com.kora.mobile.core.security.PayloadCipher
 import com.kora.mobile.domain.model.Scope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -22,7 +32,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 
-class WorkspaceRepository(private val http: KoraHttpClient, private val db: KoraDatabase, private val vault: SecretVault, private val canSync: (Scope) -> Boolean = { true }) {
+class WorkspaceRepository(private val http: KoraHttpClient, private val db: KoraDatabase, private val vault: PayloadCipher, private val decoder: EngineContractDecoder, private val canSync: (Scope) -> Boolean = { true }) {
     private val dao = db.localDao
     val localRecords = OfflineRecordRepository(db, vault, RestRecordDataSource(http), canSync = canSync)
     private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -53,6 +63,83 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
     val lastResponseWasCached: Boolean get() = _offline.value
 
     suspend fun probe(scope: Scope) { http.get(scope, "/api/ping") }
+
+    /** Actor-filtered capabilities are the only source for module-owned workspace surfaces. */
+    suspend fun publishedCatalog(scope: Scope): EngineApplicationCatalog {
+        val response = network { http.getResponse(scope, "/api/v2/modules/catalog") }
+        val catalog = decoder.decodeApplicationCatalog(response.body.toString())
+        require(catalog.businessScope == scope.businessScope) { "Engine catalog scope does not match the active workspace" }
+        return catalog
+    }
+
+    suspend fun publishedQuery(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any, cursor: String? = null): EngineQueryPage {
+        require(catalog.businessScope == scope.businessScope && catalog.queries.any { it.ownerModuleId == query.ownerModuleId && it.name == query.name && it.route == query.route }) {
+            "Published query is not part of the active actor catalog"
+        }
+        validatePublishedValue(catalog, query.inputSchema, input)
+        val request = JSONObject().put("input", input).put("limit", query.pageLimit)
+        cursor?.takeIf(String::isNotBlank)?.let { request.put("cursor", it) }
+        val response = network { http.postResponse(scope, query.route, request) }
+        return decoder.decodeQueryPage(response.body.toString()).also { page -> validatePublishedValue(catalog, query.outputSchema, page.data) }
+    }
+
+    suspend fun publishedProjection(scope: Scope, catalog: EngineApplicationCatalog, projection: EnginePublishedProjection): EngineQueryPage {
+        require(catalog.businessScope == scope.businessScope && catalog.projections.any { it.ownerModuleId == projection.ownerModuleId && it.id == projection.id && it.route == projection.route }) {
+            "Published projection is not part of the active actor catalog"
+        }
+        val response = network { http.getResponse(scope, projection.route) }
+        return decoder.decodeQueryPage(response.body.toString()).also { page -> validatePublishedValue(catalog, projection.outputSchema, page.data) }
+    }
+
+    /** Submission is online-only here; M3 owns durable offline intent queuing. */
+    suspend fun submitPublishedOperation(scope: Scope, catalog: EngineApplicationCatalog, operation: EnginePublishedOperation, input: Any, idempotencyKey: String): EngineOperationReceipt {
+        require(catalog.businessScope == scope.businessScope && catalog.operations.any { it.operationRef == operation.operationRef && it.inputSchema == operation.inputSchema }) {
+            "Published operation is not part of the active actor catalog"
+        }
+        require(operation.availability == "available") { "This action is ${operation.availability}" }
+        require(idempotencyKey.isNotBlank()) { "An idempotency key is required" }
+        validatePublishedValue(catalog, operation.inputSchema, input)
+        val request = JSONObject()
+            .put("meta", JSONObject().put("idempotency_key", idempotencyKey))
+            .put("input_schema", JSONObject().put("id", operation.inputSchema.id).put("version", operation.inputSchema.version))
+            .put("input", input)
+        val encodedRef = java.net.URLEncoder.encode(operation.operationRef, "UTF-8").replace("+", "%20")
+        val response = network { http.postResponse(scope, "/api/v2/modules/operations/$encodedRef/execute", request, idempotencyKey) }
+        return decoder.decodeOperationReceipt(response.body.toString()).also {
+            require(it.businessScope == scope.businessScope && it.operationRef == operation.operationRef) { "Engine receipt identity does not match the submitted operation" }
+            if (it.status == "completed") {
+                require(it.outputSchema == operation.outputSchema) { "Engine receipt output schema does not match the published operation" }
+                validatePublishedValue(catalog, operation.outputSchema, it.output ?: throw IllegalArgumentException("completed operation receipt has no output"))
+            }
+        }
+    }
+
+    suspend fun lookupPublishedOperation(scope: Scope, catalog: EngineApplicationCatalog, operation: EnginePublishedOperation, idempotencyKey: String): EngineOperationReceipt? {
+        require(catalog.businessScope == scope.businessScope && catalog.operations.any { it.operationRef == operation.operationRef }) {
+            "Published operation is not part of the active actor catalog"
+        }
+        require(idempotencyKey.isNotBlank()) { "An idempotency key is required" }
+        val request = JSONObject().put("operation_ref", operation.operationRef).put("idempotency_key", idempotencyKey)
+        return try {
+            val response = network { http.postResponse(scope, "/api/v2/module-executions/lookup", request) }
+            decoder.decodeOperationReceipt(response.body.toString()).also {
+                require(it.businessScope == scope.businessScope && it.operationRef == operation.operationRef) { "Engine receipt identity does not match the lookup" }
+                if (it.status == "completed") {
+                    require(it.outputSchema == operation.outputSchema) { "Engine receipt output schema does not match the published operation" }
+                    validatePublishedValue(catalog, operation.outputSchema, it.output ?: throw IllegalArgumentException("completed operation receipt has no output"))
+                }
+            }
+        } catch (error: com.kora.mobile.domain.model.KoraError) {
+            if (error.status == 404 && error.code == "module.operation_receipt_not_found") null else throw error
+        }
+    }
+
+    private fun validatePublishedValue(catalog: EngineApplicationCatalog, ref: com.kora.mobile.core.contracts.EngineSchemaRef, value: Any) {
+        val document = catalog.schemas.singleOrNull { it.ref == ref }?.schema
+            ?: throw IllegalArgumentException("The actor catalog did not publish schema ${ref.id} v${ref.version}")
+        val violations = decoder.validateSchemaDocument(document, value)
+        if (violations.isNotEmpty()) throw IllegalArgumentException("Published value failed ${ref.id} v${ref.version}: ${violations.joinToString { "${it.path}: ${it.message}" }}")
+    }
 
     suspend fun restoreCoverage(scope: Scope) {
         val completed = dao.getEntry(scope.key, "offline-prepared")

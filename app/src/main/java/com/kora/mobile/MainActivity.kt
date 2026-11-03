@@ -313,10 +313,10 @@ private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
     Scaffold(
         contentWindowInsets = WindowInsets.navigationBars,
         topBar = {
-            if (state.formOpen || state.selectedRecord != null || state.selectedDoctype != null) {
+            if (state.formOpen || state.selectedRecord != null || state.selectedDoctype != null || state.selectedPublishedQuery != null || state.selectedProjection != null || state.selectedPublishedOperation != null || state.selectedPublishedRow != null) {
                 TopAppBar(
-                    title = { Text(when { state.formOpen -> if (state.editingRecord == null) "New record" else "Edit record"; state.selectedRecord != null -> state.selectedDoctype?.label ?: "Record"; else -> "Browse" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    navigationIcon = { IconButton(onClick = { if (state.formOpen) vm.backFromForm() else if (state.selectedRecord != null) vm.closeRecordDetail() else vm.selectSection("Work") }) { Icon(Icons.Outlined.ArrowBack, "Back") } },
+                    title = { Text(when { state.formOpen -> if (state.editingRecord == null) "New record" else "Edit record"; state.selectedRecord != null -> state.selectedDoctype?.label ?: "Record"; state.selectedPublishedQuery != null -> state.selectedPublishedQuery.presentation.optString("title").ifBlank { state.selectedPublishedQuery.name }; state.selectedProjection != null -> state.selectedProjection.id; state.selectedPublishedOperation != null -> state.selectedPublishedOperation.presentation.optString("title").ifBlank { state.selectedPublishedOperation.operationRef }; else -> "Published data" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    navigationIcon = { IconButton(onClick = { if (state.formOpen) vm.backFromForm() else if (state.selectedRecord != null) vm.closeRecordDetail() else if (state.selectedPublishedRow != null) vm.selectPublishedRow(null) else if (state.selectedPublishedQuery != null || state.selectedProjection != null || state.selectedPublishedOperation != null) vm.closePublishedSurface() else vm.selectSection("Work") }) { Icon(Icons.Outlined.ArrowBack, "Back") } },
                     actions = {
                         if (state.formOpen) {
                             if (state.offline) Icon(Icons.Filled.CloudOff, "Offline", Modifier.padding(12.dp).size(24.dp), tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
@@ -337,7 +337,7 @@ private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
             }
         },
         bottomBar = {
-            if (state.selectedDoctype == null && !state.formOpen) {
+            if (state.selectedDoctype == null && !state.formOpen && state.selectedPublishedQuery == null && state.selectedProjection == null && state.selectedPublishedOperation == null && state.selectedPublishedRow == null) {
                 NavigationBar(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface) {
                     tabs.forEach { (name, icon) ->
                         val section = if (name == "Browse") "Work" else name
@@ -350,6 +350,9 @@ private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
         Column(Modifier.fillMaxSize().padding(padding)) {
             when {
                 state.formOpen -> RecordForm(state, vm)
+                state.selectedPublishedRow != null -> PublishedRowDetail(state.selectedPublishedRow)
+                state.selectedPublishedQuery != null || state.selectedProjection != null -> PublishedReadDetail(state, vm)
+                state.selectedPublishedOperation != null -> PublishedOperationDetail(state, vm)
                 state.selectedRecord != null -> RecordDetailScreen(state, vm)
                 state.selectedDoctype != null -> RecordListScreen(state, vm)
                 state.section == "Home" -> DashboardScreen(state, vm)
@@ -571,10 +574,9 @@ private fun PointOfSaleScreen(state: AppState, vm: AppViewModel) {
 private fun DashboardScreen(state: AppState, vm: AppViewModel) {
     var query by remember { mutableStateOf("") }
     val normalizedQuery = query.trim().lowercase()
-    val modules = state.navigation?.modules.orEmpty().mapNotNull { module ->
-        val matchesModule = module.label.lowercase().contains(normalizedQuery) || module.module.lowercase().contains(normalizedQuery)
-        val doctypes = module.doctypes.filter { it.label.lowercase().contains(normalizedQuery) || it.name.lowercase().contains(normalizedQuery) }
-        when { normalizedQuery.isBlank() || matchesModule -> module; doctypes.isNotEmpty() -> module.copy(doctypes = doctypes); else -> null }
+    val catalog = state.publishedCatalog
+    val modules = catalog?.modules.orEmpty().filter { module ->
+        normalizedQuery.isBlank() || module.id.lowercase().contains(normalizedQuery) || catalog?.queries?.any { it.ownerModuleId == module.id && it.name.lowercase().contains(normalizedQuery) } == true || catalog?.projections?.any { it.ownerModuleId == module.id && it.id.lowercase().contains(normalizedQuery) } == true
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -590,7 +592,7 @@ private fun DashboardScreen(state: AppState, vm: AppViewModel) {
                     Spacer(Modifier.height(7.dp))
                     Text("Your work, ready when you are.", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurface, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(14.dp))
-                    Button(onClick = { vm.selectSection("Work") }, shape = RoundedCornerShape(10.dp)) { Text("Browse records"); Spacer(Modifier.width(8.dp)); Icon(Icons.Outlined.ArrowForward, null, Modifier.size(16.dp)) }
+                    Button(onClick = { vm.selectSection("Work") }, shape = RoundedCornerShape(10.dp)) { Text("Browse published data"); Spacer(Modifier.width(8.dp)); Icon(Icons.Outlined.ArrowForward, null, Modifier.size(16.dp)) }
                 }
             }
         }
@@ -601,16 +603,24 @@ private fun DashboardScreen(state: AppState, vm: AppViewModel) {
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                placeholder = { Text("Search modules and record types") }
+                placeholder = { Text("Search published modules and queries") }
             )
         }
-        item { SectionHeading(if (normalizedQuery.isBlank()) "Your modules" else "Search results", "${modules.sumOf { it.doctypes.size }} record types") }
-        if (modules.isEmpty()) item { EmptyCard("No modules available", "Connect to refresh your workspace navigation.") }
-        if (modules.isEmpty() && normalizedQuery.isNotBlank()) item { EmptyCard("No matches found", "Try a different module or record type name.") }
-        items(modules) { module -> ModuleCard(module.label, module.doctypes.size, module.doctypes.take(3).map { it.label }) { vm.selectSection("Work") } }
+        item { SectionHeading(if (normalizedQuery.isBlank()) "Your modules" else "Search results", "${modules.size} published modules") }
+        if (catalog == null) item { EmptyCard("Published workspace unavailable", state.surfaceError ?: "Connect to load actor-authorized workspace surfaces.") }
+        else if (modules.isEmpty()) item { EmptyCard(if (normalizedQuery.isBlank()) "No published modules" else "No matches found", if (normalizedQuery.isBlank()) "No module surfaces are available in this business scope." else "Try another module or query name.") }
+        items(modules, key = { it.id }) { module ->
+            val queries = catalog?.queries?.filter { it.ownerModuleId == module.id }.orEmpty()
+            val projections = catalog?.projections?.filter { it.ownerModuleId == module.id }.orEmpty()
+            ModuleCard(module.id, queries.size + projections.size, (queries.map { it.presentation.optString("title").ifBlank { it.name } } + projections.map { it.id }).take(3)) { vm.selectSection("Work") }
+        }
         if (normalizedQuery.isNotBlank()) {
-            val matchedTypes = modules.flatMap { it.doctypes }.distinctBy { it.resourceName }
-            items(matchedTypes) { item -> DocTypeRow(item) { vm.openDoctype(item) } }
+            catalog?.queries?.filter { it.name.contains(normalizedQuery, true) || it.ownerModuleId.contains(normalizedQuery, true) }?.forEach { item ->
+                item { PublishedSurfaceRow(item.presentation.optString("title").ifBlank { item.name }, "Query · ${item.ownerModuleId}") { vm.openPublishedQuery(item) } }
+            }
+            catalog?.projections?.filter { it.id.contains(normalizedQuery, true) || it.ownerModuleId.contains(normalizedQuery, true) }?.forEach { item ->
+                item { PublishedSurfaceRow(item.id, "Historical view · ${item.ownerModuleId}") { vm.openPublishedProjection(item) } }
+            }
         }
         item { Spacer(Modifier.height(8.dp)) }
     }
@@ -618,56 +628,116 @@ private fun DashboardScreen(state: AppState, vm: AppViewModel) {
 
 @Composable
 private fun WorkScreen(state: AppState, vm: AppViewModel) {
-    var query by remember { mutableStateOf("") }
-    val normalizedQuery = query.trim().lowercase()
-    val modules = state.navigation?.modules.orEmpty().mapNotNull { module ->
-        val moduleMatches = module.label.contains(normalizedQuery, true) || module.module.contains(normalizedQuery, true)
-        val types = module.doctypes.filter { moduleMatches || it.label.contains(normalizedQuery, true) || it.name.contains(normalizedQuery, true) }
-        if (types.isEmpty()) null else module.copy(doctypes = types)
-    }
+    val catalog = state.publishedCatalog
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Browse", style = androidx.compose.material3.MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text("${modules.sumOf { it.doctypes.size }} record types across ${modules.size} areas", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Published workspace", style = androidx.compose.material3.MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(catalog?.let { "${it.queries.size} queries · ${it.projections.size} historical views · ${it.operations.size} actions" } ?: "Actor-authorized data and actions", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            IconButton(onClick = { vm.selectSection("Work") }) { Icon(Icons.Filled.Refresh, "Refresh published catalog") }
         }
-        KoraTextField(
-            value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp),
-            singleLine = true, leadingIcon = { Icon(Icons.Outlined.Search, null) },
-            placeholder = { Text("Search records and areas") }
-        )
-        if (modules.isEmpty()) {
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                EmptyCard(if (normalizedQuery.isBlank()) "Workspace is not loaded" else "No matching records", if (normalizedQuery.isBlank()) "Connect to Kora to load your workspace." else "Try another record type or area name.")
-            }
+        state.surfaceError?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error, modifier = Modifier.padding(bottom = 8.dp)) }
+        if (state.surfaceLoading && catalog == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+        val modules = catalog?.modules.orEmpty()
+        if (catalog == null) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { EmptyCard("Published workspace unavailable", state.surfaceError ?: "Connect to Kora to load actor-authorized queries and actions.") }
+        } else if (modules.isEmpty()) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { EmptyCard("No published modules", "This actor has no module surfaces in the current business scope.") }
         } else LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
-            items(modules, key = { it.module }) { module ->
+            items(modules, key = { it.id }) { module ->
+                val queries = catalog.queries.filter { it.ownerModuleId == module.id }
+                val projections = catalog.projections.filter { it.ownerModuleId == module.id }
+                val operations = catalog.operations.filter { it.ownerModuleId == module.id }
                 Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface)) {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(34.dp).background(androidx.compose.material3.MaterialTheme.colorScheme.secondary, RoundedCornerShape(11.dp)), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Filled.Inventory2, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                            }
-                            Spacer(Modifier.width(11.dp))
-                            Text(module.label, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("${module.doctypes.size}", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
+                            Box(Modifier.size(34.dp).background(androidx.compose.material3.MaterialTheme.colorScheme.secondary, RoundedCornerShape(11.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Inventory2, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)) }
+                            Spacer(Modifier.width(11.dp)); Text(module.id, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(module.state, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, style = androidx.compose.material3.MaterialTheme.typography.labelMedium)
                         }
-                        module.doctypes.forEachIndexed { index, item ->
-                            if (index == 0) Divider(Modifier.padding(top = 4.dp), color = androidx.compose.material3.MaterialTheme.colorScheme.outline.copy(alpha = .45f))
-                            Row(
-                                Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable { vm.openDoctype(item) }.padding(start = 45.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(item.label, Modifier.weight(1f), style = androidx.compose.material3.MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Icon(Icons.Outlined.ChevronRight, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            if (index < module.doctypes.lastIndex) Divider(Modifier.padding(start = 45.dp), color = androidx.compose.material3.MaterialTheme.colorScheme.outline.copy(alpha = .3f))
+                        queries.forEach { item -> PublishedSurfaceRow(item.presentation.optString("title").ifBlank { item.name }, "Query · ${item.scopePolicy}") { vm.openPublishedQuery(item) } }
+                        projections.forEach { item -> PublishedSurfaceRow(item.id, "Historical view · ${item.scopePolicy}") { vm.openPublishedProjection(item) } }
+                        operations.forEach { item ->
+                            val title = item.presentation.optString("title").ifBlank { item.operationRef }
+                            PublishedSurfaceRow(title, "Action · ${item.availability}", enabled = item.availability == "available") { vm.openPublishedOperation(item) }
                         }
+                        if (queries.isEmpty() && projections.isEmpty() && operations.isEmpty()) Text("No actor-authorized surfaces", modifier = Modifier.padding(start = 45.dp, bottom = 12.dp), color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
+            if (catalog.blockers.isNotEmpty()) item { Text("${catalog.blockers.sumOf { it.count }} capability blockers are reported by Engine.", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp)) }
         }
+    }
+}
+
+@Composable
+private fun PublishedSurfaceRow(title: String, subtitle: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 54.dp).clickable(enabled = enabled, onClick = onClick).padding(start = 45.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) { Text(title, style = androidx.compose.material3.MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(subtitle, style = androidx.compose.material3.MaterialTheme.typography.bodySmall, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (enabled) Icon(Icons.Outlined.ChevronRight, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun PublishedReadDetail(state: AppState, vm: AppViewModel) {
+    val query = state.selectedPublishedQuery
+    val projection = state.selectedProjection
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(query?.presentation?.optString("description").orEmpty().ifBlank { projection?.let { "Historical data from ${it.ownerModuleId}." }.orEmpty() }, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+        if (query != null) {
+            OutlinedTextField(value = state.publishedQueryInput, onValueChange = vm::setPublishedQueryInput, label = { Text("Query input JSON") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+            Button(onClick = { vm.runPublishedQuery() }, enabled = !state.surfaceLoading, modifier = Modifier.fillMaxWidth()) { Text(if (state.surfaceLoading) "Loading…" else "Load published data") }
+        }
+        state.surfaceError?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
+        state.publishedPage?.let { page ->
+            Card { Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                Text("${page.freshness.replaceFirstChar { it.uppercase() }} · as of ${page.asOf}", fontWeight = FontWeight.SemiBold)
+                Text("Source revision: ${page.sourceRevision ?: "not supplied"}", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                page.snapshotToken?.let { Text("Snapshot: $it", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
+                if (page.freshness in setOf("stale", "incomplete", "unknown")) Text("This result is ${page.freshness}; do not treat it as complete current data.", color = androidx.compose.material3.MaterialTheme.colorScheme.error)
+            } }
+            page.data.let { rows ->
+                if (rows.length() == 0) Text("No rows were returned by this published surface.", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                for (index in 0 until rows.length()) rows.optJSONObject(index)?.let { row ->
+                    Card(Modifier.fillMaxWidth().clickable { vm.selectPublishedRow(row) }) { Text(row.toString(), modifier = Modifier.padding(14.dp), maxLines = 4, overflow = TextOverflow.Ellipsis) }
+                }
+            }
+            page.nextCursor?.let { cursor -> OutlinedButton(onClick = { vm.runPublishedQuery(cursor) }, enabled = query != null && !state.surfaceLoading) { Text("Next page") } }
+        }
+    }
+}
+
+@Composable
+private fun PublishedRowDetail(row: JSONObject) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        val ref = row.optJSONObject("business_ref")
+        if (ref != null) {
+            Text("${ref.optString("provider_id")} · ${ref.optString("resource_type")} · ${ref.optString("id")}", fontWeight = FontWeight.SemiBold)
+            Text("Scope: ${ref.optJSONObject("scope")?.toString() ?: "not supplied"}", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text(row.toString())
+    }
+}
+
+@Composable
+private fun PublishedOperationDetail(state: AppState, vm: AppViewModel) {
+    val operation = state.selectedPublishedOperation ?: return
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(operation.presentation.optString("description").ifBlank { "Engine validates this action against its published input schema and current permissions." }, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Input schema ${operation.inputSchema.id} v${operation.inputSchema.version}", style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
+        OutlinedTextField(value = state.operationInput, onValueChange = vm::setOperationInput, enabled = !state.operationMayHaveRun, label = { Text("Action input JSON") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
+        Button(onClick = { vm.executePublishedOperation(operation) }, enabled = operation.availability == "available" && !state.surfaceLoading, modifier = Modifier.fillMaxWidth()) { Text(if (state.surfaceLoading) "Submitting…" else "Submit action") }
+        if (state.operationMayHaveRun) OutlinedButton(onClick = vm::recoverPublishedOperation, enabled = !state.surfaceLoading, modifier = Modifier.fillMaxWidth()) { Text("Check operation receipt") }
+        state.surfaceError?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
+        state.operationReceipt?.let { receipt ->
+            Card { Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("${receipt.status.replace('_', ' ').replaceFirstChar { it.uppercase() }} · execution ${receipt.executionId}", fontWeight = FontWeight.SemiBold)
+                Text("Revision ${receipt.revision} · scope ${receipt.businessScope.kind}", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                receipt.output?.let { Text(it.toString()) }
+                receipt.errorMessage?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
+            } }
+        }
+        if (state.operationReceipt != null && !state.operationMayHaveRun) OutlinedButton(onClick = vm::startNewPublishedOperation, modifier = Modifier.fillMaxWidth()) { Text("Start another action") }
     }
 }
 
