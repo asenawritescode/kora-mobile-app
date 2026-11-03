@@ -131,7 +131,7 @@ class WorkspaceRepositoryPublishedContractsTest {
         return JSONObject().put("revision", 9).put("business_scope", scope)
             .put("modules", org.json.JSONArray().put(JSONObject().put("id", "sales.orders").put("version", "1.0.0").put("state", "active")))
             .put("published_queries", org.json.JSONArray().put(JSONObject()
-                .put("owner_module_id", "sales.orders").put("name", "list").put("route", "/api/v1/modules/sales.orders/queries/list")
+                .put("owner_module_id", "sales.orders").put("name", "list").put("capability", "sales.read").put("route", "/api/v1/modules/sales.orders/queries/list")
                 .put("input_schema", schemaRef("orders.input")).put("output_schema", schemaRef("orders.output")).put("scope_policy", "entity_owned")
                 .put("allowed_fields", org.json.JSONArray().put("id")).put("page_limit", 25).put("presentation", JSONObject().put("title", "Orders"))))
             .put("published_projections", org.json.JSONArray().put(JSONObject()
