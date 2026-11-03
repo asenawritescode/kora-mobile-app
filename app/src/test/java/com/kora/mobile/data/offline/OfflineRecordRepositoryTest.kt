@@ -241,6 +241,98 @@ class OfflineRecordRepositoryTest {
         }
     }
 
+    @Test fun snapshotIdentityChangeMidBootstrapKeepsPreviousSnapshot() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val bootstrapPages = AtomicInteger()
+        val server = ServerSocket().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
+        val thread = Thread {
+            while (!server.isClosed) runCatching {
+                server.accept().use { socket ->
+                    val request = readRequest(socket.getInputStream())
+                    val path = URI(request.first).path.removePrefix("/s/site")
+                    val body = request.second.takeIf(String::isNotBlank)?.let(::JSONObject) ?: JSONObject()
+                    when (path) {
+                        "/api/v2/offline/capabilities" -> respond(socket, capabilitiesJson())
+                        "/api/v2/offline/bootstrap" -> {
+                            val page = bootstrapPages.incrementAndGet()
+                            val source = sourceJson(body.getJSONObject("source"))
+                            val snapshot = snapshotJson(source).put("snapshot_token", if (page == 1) "snapshot-a" else "snapshot-b")
+                                .put("complete", page != 1)
+                            if (page == 1) snapshot.put("next_page_cursor", "page-2")
+                            else snapshot.getJSONArray("rows").put(JSONObject().put("id", "row-2"))
+                            respond(socket, snapshot)
+                        }
+                        else -> respondError(socket, "not_found", 404)
+                    }
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        val db = Room.inMemoryDatabaseBuilder(context, KoraDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val scope = Scope("i", "http://127.0.0.1:${server.localPort}", "site", "alice", BusinessScope("tenant-a"))
+            val queryCatalog = feedCatalog()
+            val query = queryCatalog.queries.single()
+            val repo = repository(context, db)
+            repo.replaceSnapshot(scope, query.ownerModuleId, listOf("previous-row" to JSONObject().put("id", "previous-row")), complete = true)
+
+            val result = runCatching { repo.bootstrap(scope, queryCatalog, query, JSONObject()) }
+            assertTrue("snapshot token changed between pages", result.isFailure)
+            assertEquals(2, bootstrapPages.get())
+            assertEquals(listOf("previous-row"), db.localDao.facts(scope.key, query.ownerModuleId).map { it.factKey })
+            assertNull(repo.savedCheckpoint(scope, queryCatalog, query, JSONObject()))
+        } finally {
+            db.close()
+            server.close()
+            thread.join(1000)
+        }
+    }
+
+    @Test fun revokedOperationOrSchemaBlocksSavedIntentWithoutDispatch() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sends = AtomicInteger()
+        val server = ServerSocket().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
+        val thread = Thread {
+            while (!server.isClosed) runCatching {
+                server.accept().use { socket ->
+                    val request = readRequest(socket.getInputStream())
+                    when (URI(request.first).path.removePrefix("/s/site")) {
+                        "/api/v2/offline/capabilities" -> respond(socket, capabilitiesJson())
+                        "/api/v2/offline/intents" -> {
+                            sends.incrementAndGet()
+                            respond(socket, JSONObject().put("receipts", org.json.JSONArray()))
+                        }
+                        else -> respondError(socket, "not_found", 404)
+                    }
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        val db = Room.inMemoryDatabaseBuilder(context, KoraDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val scope = Scope("i", "http://127.0.0.1:${server.localPort}", "site", "alice", BusinessScope("tenant-a"))
+            val repo = repository(context, db)
+            val originalCatalog = catalog(4)
+            val operation = originalCatalog.operations.single()
+            val intentId = repo.enqueue(scope, originalCatalog, operation, JSONObject().put("amount", 3), "stable-revocation-key")
+
+            val revokedOperationCatalog = originalCatalog.copy(operations = listOf(operation.copy(availability = "draining")))
+            val revokedResult = repo.sync(scope, revokedOperationCatalog)
+            assertNotNull(revokedResult.error)
+            assertEquals("blocked", db.localDao.intent(scope.key, intentId)?.status)
+            assertEquals(0, sends.get())
+
+            val schemaIntentId = repo.enqueue(scope, originalCatalog, operation, JSONObject().put("amount", 4), "stable-schema-revocation-key")
+            val revokedSchemaCatalog = originalCatalog.copy(schemas = originalCatalog.schemas.filterNot { it.ref == operation.inputSchema })
+            val schemaResult = repo.sync(scope, revokedSchemaCatalog)
+            assertNotNull(schemaResult.error)
+            assertEquals("blocked", db.localDao.intent(scope.key, schemaIntentId)?.status)
+            assertEquals(0, sends.get())
+        } finally {
+            db.close()
+            server.close()
+            thread.join(1000)
+        }
+    }
+
     private fun repository(context: Context, db: KoraDatabase) = OfflineRecordRepository(db, Cipher(), RestRecordDataSource(
         com.kora.mobile.core.network.KoraHttpClient(object : com.kora.mobile.core.security.SessionSecretStore {
             override fun put(key: String, value: String) = Unit
