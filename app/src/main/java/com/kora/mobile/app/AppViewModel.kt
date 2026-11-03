@@ -176,25 +176,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } catch (error: Exception) { _state.update { it.copy(message = error.message) } }
     }
 
-    fun signIn(email: String, password: String) = viewModelScope.launch {
-        _state.update { it.copy(busy = true, message = null) }
-        try {
-            val instance = app.instanceStore.current()
-            require(!instance.siteRef.isNullOrBlank()) { "Enter a Site ID before signing in" }
-            val loginScope = Scope(instance.id, instance.origin, instance.siteRef, "")
-            app.workspace.login(loginScope, email, password)
-            val user = parseUser(app.workspace.currentUser(loginScope))
-            scope = Scope(instance.id, instance.origin, instance.siteRef, user.name)
-            val activeScope = scope!!
-            observeOfflineIntents(activeScope)
-            app.workspace.bindAnonymousSession(loginScope, activeScope)
-            app.activateScope(activeScope)
-            app.getSharedPreferences("kora_session", 0).edit().putString("last_user", user.name).putString("last_email", user.email).putString("last_full_name", user.fullName).apply()
-            _state.update { it.copy(stage = AppStage.WORKSPACE, user = user, busy = false, message = null, offline = false) }
-            loadWorkspace()
-        } catch (error: Exception) { _state.update { it.copy(busy = false, message = error.message ?: "Sign in failed") } }
-    }
-
     fun requestMagicLink(email: String) = viewModelScope.launch {
         _state.update { it.copy(busy = true, message = null) }
         try {
@@ -216,8 +197,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 "This sign-in link belongs to a different server or site. Configure its workspace first."
             }
             val loginScope = Scope(instance.id, instance.origin, instance.siteRef, "")
-            app.workspace.verifyMagicLink(loginScope, token)
-            val user = parseUser(app.workspace.currentUser(loginScope))
+            val user = parseUser(app.workspace.verifyMagicLink(loginScope, token))
             scope = Scope(instance.id, instance.origin, instance.siteRef, user.name)
             val activeScope = scope!!
             observeOfflineIntents(activeScope)
