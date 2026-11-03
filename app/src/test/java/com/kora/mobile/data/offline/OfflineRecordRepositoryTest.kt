@@ -365,6 +365,7 @@ class OfflineRecordRepositoryTest {
     private fun snapshotJson(source: JSONObject) = JSONObject().put("source", sourceJson(source)).put("input_hash", sha256("{}"))
         .put("business_scope", JSONObject().put("tenant_id", "tenant-a").put("kind", "tenant")).put("subject_id", "alice")
         .put("schema_revision", JSONObject().put("id", "feed.output").put("version", 1)).put("catalog_revision", 4)
+        .put("fact_key_field", "id")
         .put("snapshot_token", "snapshot-1").put("replay_position", "cursor-1").put("rows", org.json.JSONArray().put(JSONObject().put("id", "row-1"))).put("complete", true)
 
     private fun pullJson(source: JSONObject, changes: List<JSONObject>, hasMore: Boolean, next: String?, through: String) = JSONObject()
