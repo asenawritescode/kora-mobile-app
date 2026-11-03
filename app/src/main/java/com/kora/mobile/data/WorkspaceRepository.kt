@@ -31,6 +31,7 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
     val offline: StateFlow<Boolean> = _offline
     private val _coverage = MutableStateFlow(OfflineCoverage())
     val coverage: StateFlow<OfflineCoverage> = _coverage
+    @Volatile private var coverageScopeKey: String? = null
     private val downloadMutex = Mutex()
     var networkAvailable = true
     fun markNetworkUnavailable() { networkAvailable = false; _offline.value = true }
@@ -55,11 +56,18 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
     suspend fun probe(scope: Scope) { http.get(scope, "/api/ping") }
 
     suspend fun restoreCoverage(scope: Scope) {
+        coverageScopeKey = scope.key
         val completed = dao.getEntry(scope.key, "offline-prepared")
-        _coverage.value = OfflineCoverage(completedAt = completed?.fetchedAt)
+        if (coverageScopeKey == scope.key) _coverage.value = OfflineCoverage(completedAt = completed?.fetchedAt)
+    }
+
+    fun activateCoverageScope(scope: Scope?) {
+        coverageScopeKey = scope?.key
+        _coverage.value = OfflineCoverage()
     }
 
     suspend fun prepareOffline(scope: Scope) = downloadMutex.withLock {
+        coverageScopeKey = scope.key
         _coverage.value = _coverage.value.copy(downloading = true, error = null)
         try {
             val generation = network { localRecords.capabilities(scope) }.optLong("generation", -1)
@@ -79,7 +87,7 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
                     if (!type.optBoolean("is_child")) types[type.optString("name")] = type.optString("resource_name").ifBlank { type.optString("name") }
                 }
             }
-            _coverage.value = _coverage.value.copy(totalTypes = types.size, completedTypes = 0)
+            updateCoverage(scope) { OfflineCoverage(downloading = true, totalTypes = types.size) }
             val schemas = mutableSetOf<String>()
             fun routeFor(type: String) = types[type] ?: type.lowercase().replace(' ', '-')
             suspend fun downloadSchema(type: String): JSONObject {
@@ -105,7 +113,7 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
                 collectDependencies(schema)
                 val page = "/" + name.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
                 manifest(page)
-                _coverage.value = _coverage.value.copy(completedTypes = _coverage.value.completedTypes + 1)
+                updateCoverage(scope) { it.copy(completedTypes = it.completedTypes + 1) }
             }
             while (dependencies.isNotEmpty()) {
                 val (child, isTable) = dependencies.removeFirst()
@@ -118,9 +126,13 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
             network { localRecords.bootstrap(scope, types, generation) }
             val completed = System.currentTimeMillis()
             dao.putEntry(LocalEntry(scope.key, "offline-prepared", vault.encrypt(types.values.joinToString(",")), completed, "coverage"))
-            _coverage.value = _coverage.value.copy(downloading = false, completedAt = completed)
-        } catch (cancelled: CancellationException) { _coverage.value = _coverage.value.copy(downloading = false); throw cancelled }
-        catch (error: Exception) { _coverage.value = _coverage.value.copy(downloading = false, error = error.message ?: "Download interrupted") }
+            updateCoverage(scope) { it.copy(downloading = false, completedAt = completed) }
+        } catch (cancelled: CancellationException) { updateCoverage(scope) { it.copy(downloading = false) }; throw cancelled }
+        catch (error: Exception) { updateCoverage(scope) { it.copy(downloading = false, error = error.message ?: "Download interrupted") } }
+    }
+
+    private inline fun updateCoverage(scope: Scope, transform: (OfflineCoverage) -> OfflineCoverage) {
+        if (coverageScopeKey == scope.key) _coverage.value = transform(_coverage.value)
     }
 
     suspend fun login(scope: Scope, email: String, password: String) {
