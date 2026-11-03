@@ -162,6 +162,19 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
         http.get(scope, "/api/auth/me")
     }
 
+    suspend fun requestMagicLink(scope: Scope, email: String) {
+        require(email.isNotBlank()) { "Enter your email address" }
+        http.get(scope, "/api/auth/providers")
+        http.post(scope, "/api/auth/magic-link/request", JSONObject().put("email", email.trim()))
+    }
+
+    suspend fun verifyMagicLink(scope: Scope, token: String) {
+        require(token.isNotBlank())
+        http.get(scope, "/api/auth/providers")
+        http.post(scope, "/api/auth/magic-link/verify", JSONObject().put("token", token))
+        http.get(scope, "/api/auth/me")
+    }
+
     suspend fun currentUser(scope: Scope): JSONObject = network { http.get(scope, "/api/auth/me") as? JSONObject ?: JSONObject() }
     suspend fun logout(scope: Scope) { runCatching { http.post(scope, "/api/auth/logout") }; http.clearSession(scope) }
     suspend fun navigation(scope: Scope): JSONObject = cached(scope, "navigation", "navigation") { http.get(scope, "/api/v1/system/navigation") as? JSONObject ?: JSONObject() } as? JSONObject ?: JSONObject()
