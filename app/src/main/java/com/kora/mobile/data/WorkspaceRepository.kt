@@ -156,10 +156,19 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
         if (violations.isNotEmpty()) throw IllegalArgumentException("Published value failed ${ref.id} v${ref.version}: ${violations.joinToString { "${it.path}: ${it.message}" }}")
     }
 
-    suspend fun login(scope: Scope, email: String, password: String) {
-        http.get(scope, "/api/auth/providers")
-        http.post(scope, "/api/auth/login", JSONObject().put("email", email).put("password", password))
-        http.get(scope, "/api/auth/me")
+    suspend fun requestMagicLink(scope: Scope, email: String) {
+        require(email.isNotBlank()) { "Enter your email address" }
+        // This endpoint is anonymous and rate limited. A bearer header selects
+        // the Engine API client's documented CSRF path; it does not authenticate
+        // or grant access to the account.
+        val requestMarker = java.util.UUID.randomUUID().toString()
+        http.post(scope, "/api/auth/magic-link/request", JSONObject().put("email", email.trim()), authorization = "Bearer $requestMarker")
+    }
+
+    suspend fun verifyMagicLink(scope: Scope, token: String): JSONObject {
+        require(token.isNotBlank())
+        http.post(scope, "/api/auth/magic-link/verify", JSONObject().put("token", token), authorization = "Bearer $token")
+        return currentUser(scope)
     }
 
     suspend fun currentUser(scope: Scope): JSONObject = network { http.get(scope, "/api/auth/me") as? JSONObject ?: JSONObject() }

@@ -24,8 +24,8 @@ import java.net.ServerSocket
 import java.net.URI
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(RobolectricTestRunner::class)
 class WorkspaceRepositoryPublishedContractsTest {
@@ -39,6 +39,59 @@ class WorkspaceRepositoryPublishedContractsTest {
     private class TestCipher : PayloadCipher {
         override fun encrypt(value: String) = value
         override fun decrypt(encoded: String) = encoded
+    }
+
+    @Test
+    fun magicLinkUsesEngineRoutesAndTransfersTheIssuedSessionToCurrentUserRead() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val requests = java.util.Collections.synchronizedList(mutableListOf<Triple<String, Map<String, String>, String>>())
+        val server = ServerSocket().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
+        val serverFailure = AtomicReference<Throwable?>(null)
+        val serverThread = Thread {
+            try {
+                repeat(3) { index ->
+                    server.accept().use { socket ->
+                        val request = readRequest(socket.getInputStream())
+                        requests += request
+                        val response = when (index) {
+                            0 -> "{\"data\":{\"message\":\"If that account can sign in, a link will arrive by email.\"}}"
+                            1 -> "{\"data\":{\"user\":{}}}"
+                            else -> "{\"data\":{\"name\":\"alice\",\"email\":\"alice@example.test\",\"full_name\":\"Alice\",\"roles\":[]}}"
+                        }.toByteArray()
+                        socket.getOutputStream().apply {
+                            write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n".toByteArray())
+                            if (index == 1) write("Set-Cookie: kora_sid=actor-session; Path=/; HttpOnly\r\n".toByteArray())
+                            write("Content-Length: ${response.size}\r\nConnection: close\r\n\r\n".toByteArray())
+                            write(response)
+                            flush()
+                        }
+                    }
+                }
+            } catch (error: Throwable) { serverFailure.set(error) }
+        }.apply { isDaemon = true; start() }
+        val db = Room.inMemoryDatabaseBuilder(context, KoraDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val repository = WorkspaceRepository(KoraHttpClient(MemorySecrets()), db, TestCipher(), EngineContractDecoder.fromAssets(context))
+            val scope = Scope("magic-link-test", "http://127.0.0.1:${server.localPort}", "tenant-a", "")
+            repository.requestMagicLink(scope, "alice@example.test")
+            val user = repository.verifyMagicLink(scope, "one-time-token")
+            serverThread.join(2000)
+
+            assertNull("the fake Engine server must process the full request sequence", serverFailure.get())
+            assertEquals("/s/tenant-a/api/auth/magic-link/request", java.net.URI(requests[0].first).path)
+            assertTrue(requests[0].second["authorization"].orEmpty().startsWith("Bearer "))
+            assertEquals("alice@example.test", JSONObject(requests[0].third).getString("email"))
+            assertEquals("/s/tenant-a/api/auth/magic-link/verify", java.net.URI(requests[1].first).path)
+            assertEquals("Bearer one-time-token", requests[1].second["authorization"])
+            assertEquals("one-time-token", JSONObject(requests[1].third).getString("token"))
+            assertEquals("/s/tenant-a/api/auth/me", java.net.URI(requests[2].first).path)
+            assertTrue(requests[2].second["cookie"].orEmpty().contains("kora_sid=actor-session"))
+            assertEquals("alice", user.getString("name"))
+        } finally {
+            db.close()
+            server.close()
+            serverThread.join(1000)
+        }
     }
 
     @Test

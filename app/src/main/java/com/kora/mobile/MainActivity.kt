@@ -107,6 +107,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -158,6 +159,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             val vm: AppViewModel = viewModel(factory = factory)
+            LaunchedEffect(intent?.dataString) { vm.acceptMagicLink(intent?.data) }
             val state by vm.state.collectAsState()
             KoraTheme(
                 primaryColor = state.tenantBranding?.primaryColor ?: state.navigation?.branding?.primaryColor,
@@ -168,6 +170,12 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        ViewModelProvider(this, factory)[AppViewModel::class.java].acceptMagicLink(intent.data)
+    }
 }
 
 @Composable
@@ -175,7 +183,7 @@ private fun KoraApp(state: AppState, vm: AppViewModel) {
     Surface(modifier = Modifier.fillMaxSize(), color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
         when (state.stage) {
             AppStage.SERVER -> ServerSetup(state, onNext = vm::goToLogin, onConnect = vm::connect)
-            AppStage.LOGIN -> LoginScreen(state, onBack = { vm.logout() }, onSubmit = { email, password -> vm.signIn(email, password) }, onChangeServer = { vm.logout() })
+            AppStage.LOGIN -> LoginScreen(state, onBack = { vm.logout() }, onMagicLink = vm::requestMagicLink, onChangeServer = { vm.logout() })
             AppStage.WORKSPACE -> WorkspaceShell(state, vm)
         }
     }
@@ -234,10 +242,8 @@ private fun BrandMark() {
 }
 
 @Composable
-private fun LoginScreen(state: AppState, onBack: () -> Unit, onSubmit: (String, String) -> Unit, onChangeServer: () -> Unit) {
+private fun LoginScreen(state: AppState, onBack: () -> Unit, onMagicLink: (String) -> Unit, onChangeServer: () -> Unit) {
     var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var showPassword by remember { mutableStateOf(false) }
     androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.fillMaxSize().imePadding(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 24.dp, vertical = 24.dp), verticalArrangement = Arrangement.Center) {
       item {
        Column(Modifier.fillMaxWidth().widthIn(max = 440.dp).padding(horizontal = 0.dp)) {
@@ -251,31 +257,13 @@ private fun LoginScreen(state: AppState, onBack: () -> Unit, onSubmit: (String, 
         Spacer(Modifier.height(22.dp))
         KoraTextField(value = email, onValueChange = { email = it }, modifier = Modifier.fillMaxWidth(), label = "Email", singleLine = true)
         Spacer(Modifier.height(12.dp))
-        KoraTextField(
-            value = password,
-            onValueChange = { password = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = "Password",
-            visualTransformation = if (showPassword) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            trailingIcon = {
-                IconButton(onClick = { showPassword = !showPassword }) {
-                    Icon(
-                        imageVector = if (showPassword) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                        contentDescription = if (showPassword) "Hide password" else "Show password",
-                    )
-                }
-            },
-            singleLine = true,
-        )
-        Spacer(Modifier.height(14.dp))
         state.message?.let { MessageBanner(it, false); Spacer(Modifier.height(10.dp)) }
-        Button(onClick = { onSubmit(email.trim(), password) }, modifier = Modifier.fillMaxWidth().height(54.dp), enabled = !state.busy && email.isNotBlank() && password.isNotBlank(), shape = RoundedCornerShape(16.dp)) {
+        Button(onClick = { onMagicLink(email.trim()) }, modifier = Modifier.fillMaxWidth().height(54.dp), enabled = !state.busy && email.isNotBlank(), shape = RoundedCornerShape(16.dp)) {
             if (state.busy) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary)
-            else Text("Sign in", fontWeight = FontWeight.SemiBold)
+            else Text("Email me a sign-in link", fontWeight = FontWeight.SemiBold)
         }
-        Spacer(Modifier.height(12.dp))
-        Text("Sign in with your Kora account. Need a magic link? Open it on this device to continue.", fontSize = 12.sp, lineHeight = 18.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        Text("The link opens this workspace on your device and can only be used once.", fontSize = 12.sp, lineHeight = 18.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
        }
       }
     }

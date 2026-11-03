@@ -44,6 +44,7 @@ import com.kora.mobile.OutboxSyncWorker
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
+import android.net.Uri
 
 private fun parseJsonValue(raw: String): Any {
     val parser = org.json.JSONTokener(raw)
@@ -175,14 +176,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } catch (error: Exception) { _state.update { it.copy(message = error.message) } }
     }
 
-    fun signIn(email: String, password: String) = viewModelScope.launch {
+    fun requestMagicLink(email: String) = viewModelScope.launch {
         _state.update { it.copy(busy = true, message = null) }
         try {
             val instance = app.instanceStore.current()
-            require(!instance.siteRef.isNullOrBlank()) { "Enter a Site ID before signing in" }
+            require(!instance.siteRef.isNullOrBlank()) { "Enter a Site ID before requesting a sign-in link" }
+            app.workspace.requestMagicLink(Scope(instance.id, instance.origin, instance.siteRef, ""), email)
+            _state.update { it.copy(busy = false, message = "If that account can sign in, a link will arrive by email.") }
+        } catch (error: Exception) { _state.update { it.copy(busy = false, message = error.message ?: "Could not request a sign-in link") } }
+    }
+
+    fun acceptMagicLink(uri: Uri?) = viewModelScope.launch {
+        val token = uri?.getQueryParameter("magic_token")?.takeIf(String::isNotBlank) ?: return@launch
+        _state.update { it.copy(busy = true, message = null) }
+        try {
+            val instance = app.instanceStore.current()
+            val incomingOrigin = "${uri.scheme}://${uri.authority}"
+            val incomingSite = Regex("^/s/([^/]+)/workspace/auth/login/?$").matchEntire(uri.path.orEmpty())?.groupValues?.get(1)
+            require(incomingOrigin.equals(instance.origin.trimEnd('/'), ignoreCase = true) && incomingSite == instance.siteRef) {
+                "This sign-in link belongs to a different server or site. Configure its workspace first."
+            }
             val loginScope = Scope(instance.id, instance.origin, instance.siteRef, "")
-            app.workspace.login(loginScope, email, password)
-            val user = parseUser(app.workspace.currentUser(loginScope))
+            val user = parseUser(app.workspace.verifyMagicLink(loginScope, token))
             scope = Scope(instance.id, instance.origin, instance.siteRef, user.name)
             val activeScope = scope!!
             observeOfflineIntents(activeScope)
@@ -191,7 +206,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             app.getSharedPreferences("kora_session", 0).edit().putString("last_user", user.name).putString("last_email", user.email).putString("last_full_name", user.fullName).apply()
             _state.update { it.copy(stage = AppStage.WORKSPACE, user = user, busy = false, message = null, offline = false) }
             loadWorkspace()
-        } catch (error: Exception) { _state.update { it.copy(busy = false, message = error.message ?: "Sign in failed") } }
+        } catch (error: Exception) { _state.update { it.copy(stage = AppStage.LOGIN, busy = false, message = error.message ?: "This sign-in link is invalid or expired") } }
     }
 
     fun selectSection(section: String) {
