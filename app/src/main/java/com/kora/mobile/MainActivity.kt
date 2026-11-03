@@ -353,7 +353,7 @@ private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
                 state.section == "Home" -> DashboardScreen(state, vm)
                 state.section == "Work" -> WorkScreen(state, vm)
                 state.section == "POS" -> PointOfSaleScreen(state, vm)
-                state.section == "Requests" -> RequestsScreen(state)
+                state.section == "Requests" -> RequestsScreen(state, vm)
                 state.section == "Reports" -> ReportsScreen(state, vm)
                 else -> SyncScreen(state, vm)
             }
@@ -1897,9 +1897,10 @@ private fun fieldTruthy(value: Any?): Boolean = when (value) {
 }
 
 @Composable
-private fun RequestsScreen(state: AppState) {
+private fun RequestsScreen(state: AppState, vm: AppViewModel) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Spacer(Modifier.height(8.dp)); SectionHeading("Requests", "Needs action") }
+        item { OutlinedButton(onClick = vm::refreshRequests, enabled = !state.workflowBusy, modifier = Modifier.fillMaxWidth()) { Text("Refresh status") } }
         if (state.requests.isEmpty()) item { EmptyCard("Nothing needs your attention", if (state.offline) "No cached requests are available. Reconnect to refresh." else "Requests assigned to you will show up here.") }
         items(state.requests) { request ->
             val title = request.optString("title", "Request")
@@ -1909,6 +1910,46 @@ private fun RequestsScreen(state: AppState) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(status.replace('_', ' '), color = androidx.compose.material3.MaterialTheme.colorScheme.primary, fontSize = 11.sp) }
                     if (message.isNotBlank()) Text(message, Modifier.padding(top = 5.dp), color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    val assignment = request.optJSONArray("assignments")?.optJSONObject(0)
+                    val responses = request.optJSONArray("allowed_responses")
+                    if (assignment != null && responses != null && responses.length() > 0) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 10.dp)) {
+                            (0 until responses.length()).take(2).forEach { index ->
+                                val answer = responses.optString(index)
+                                OutlinedButton(onClick = { vm.respondToRequest(request, answer) }, enabled = !state.workflowBusy) { Text(answer.replace('_', ' ').replaceFirstChar { it.uppercase() }) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        item { SectionHeading("Workflow status", "Recent activity") }
+        item { OutlinedButton(onClick = vm::refreshWorkflowDefinitions, enabled = !state.workflowBusy, modifier = Modifier.fillMaxWidth()) { Text("Load available workflows") } }
+        if (state.workflowError != null) item { MessageBanner(state.workflowError, state.offline) }
+        items(state.workflowDefinitions, key = { "definition:${it.id}:${it.version}" }) { definition ->
+            var subjectId by remember(definition.id, definition.version) { mutableStateOf("") }
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text(definition.id, fontWeight = FontWeight.SemiBold)
+                    Text("v${definition.version} · ${definition.digest.take(12)}", fontSize = 11.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(subjectId, { subjectId = it }, label = { Text("Subject ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedButton(onClick = { vm.startWorkflow(definition, "record", subjectId.trim()) }, enabled = !state.workflowBusy && subjectId.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start workflow") }
+                }
+            }
+        }
+        if (state.workflowInstances.isEmpty()) item { EmptyCard("No recent workflows", "Workflow status will appear here when this workspace has activity.") }
+        items(state.workflowInstances, key = { it.id }) { workflow ->
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text(workflow.definitionId, Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(workflow.status.replace('_', ' '), color = androidx.compose.material3.MaterialTheme.colorScheme.primary, fontSize = 11.sp) }
+                    Text("${workflow.currentStep} · ${workflow.subjectType} ${workflow.subjectId}", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    if (workflow.status == "outcome_unknown") Text("Outcome needs review. Reconcile it with the workflow owner before retrying.", color = androidx.compose.material3.MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                    if (workflow.status in setOf("waiting", "retrying", "outcome_unknown")) Text("Check the workflow history before taking another action.", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    OutlinedButton(onClick = { vm.loadWorkflowHistory(workflow.id) }) { Text("Load history") }
+                    state.workflowHistory[workflow.id].orEmpty().forEach { event ->
+                        Text("${event.optString("step_id")} · ${event.optString("kind")} · ${event.optString("status")}", fontSize = 11.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (event.optString("detail").isNotBlank()) Text(event.optString("detail"), fontSize = 11.sp)
+                    }
                 }
             }
         }

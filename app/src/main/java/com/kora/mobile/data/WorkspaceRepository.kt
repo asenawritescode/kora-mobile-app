@@ -17,6 +17,12 @@ import com.kora.mobile.core.contracts.EngineQueryPage
 import com.kora.mobile.core.contracts.decodeApplicationCatalog
 import com.kora.mobile.core.contracts.decodeOperationReceipt
 import com.kora.mobile.core.contracts.decodeQueryPage
+import com.kora.mobile.core.contracts.EngineResponseReceipt
+import com.kora.mobile.core.contracts.EngineWorkflowInstance
+import com.kora.mobile.core.contracts.EngineWorkflowDefinitionRef
+import com.kora.mobile.core.contracts.decodeResponseReceipt
+import com.kora.mobile.core.contracts.decodeWorkflowInstance
+import com.kora.mobile.core.contracts.decodeWorkflowDefinitionRef
 import com.kora.mobile.core.security.PayloadCipher
 import com.kora.mobile.domain.model.Scope
 import kotlinx.coroutines.flow.Flow
@@ -186,6 +192,62 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
     }
     suspend fun schema(scope: Scope, doctype: String): JSONObject = cached(scope, "schema:$doctype", "schema") { http.get(scope, "/api/v1/system/doctype/$doctype") as? JSONObject ?: JSONObject() } as? JSONObject ?: JSONObject()
     suspend fun requests(scope: Scope): JSONObject = cached(scope, "requests", "requests") { http.get(scope, "/api/v2/requests", mapOf("view" to "needs_action", "kind" to "task", "limit" to "25", "overdue_only" to "false")) as? JSONObject ?: JSONObject() } as? JSONObject ?: JSONObject()
+
+    suspend fun respondToRequest(scope: Scope, requestId: String, assignmentId: String, response: String, comment: String = "", idempotencyKey: String): EngineResponseReceipt {
+        require(idempotencyKey.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey))
+            .put("assignment_id", assignmentId).put("response", response).put("comment", comment)
+        val result = network { http.postResponse(scope, "/api/v2/requests/${pathSegment(requestId)}/responses", body, idempotencyKey) }
+        return decoder.decodeResponseReceipt(result.body.toString())
+    }
+
+    suspend fun workflowInstances(scope: Scope): List<EngineWorkflowInstance> {
+        val result = network { http.getResponse(scope, "/api/v2/workflow-instances") }
+        val rows = when (val body = result.body) {
+            is JSONArray -> body
+            is JSONObject -> body.optJSONArray("items") ?: JSONArray()
+            else -> JSONArray()
+        }
+        return (0 until rows.length()).map { decoder.decodeWorkflowInstance(rows.getJSONObject(it).toString()) }
+    }
+
+    suspend fun workflowDefinitions(scope: Scope): List<EngineWorkflowDefinitionRef> {
+        val result = network { http.getResponse(scope, "/api/v2/workflow-definitions") }
+        val rows = result.body as? JSONArray ?: JSONArray()
+        return (0 until rows.length()).map { decoder.decodeWorkflowDefinitionRef(rows.getJSONObject(it).toString()) }
+    }
+
+    suspend fun startWorkflow(scope: Scope, definitionId: String, version: Int, subjectType: String, subjectId: String, idempotencyKey: String): EngineWorkflowInstance {
+        require(definitionId.isNotBlank() && version > 0 && subjectType.isNotBlank() && subjectId.isNotBlank() && idempotencyKey.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey))
+            .put("definition_id", definitionId).put("definition_version", version)
+            .put("subject", JSONObject().put("kind", subjectType).put("id", subjectId))
+            .put("business_scope", JSONObject().put("tenant_id", scope.businessScope.tenantId).put("kind", scope.businessScope.kind).apply {
+                scope.businessScope.legalEntityId?.let { put("legal_entity_id", it) }
+            })
+        val result = network { http.postResponse(scope, "/api/v2/workflow-instances", body, idempotencyKey) }
+        return decoder.decodeWorkflowInstance(result.body.toString())
+    }
+
+    suspend fun workflowHistory(scope: Scope, id: String): JSONArray =
+        (network { http.getResponse(scope, "/api/v2/workflow-instances/${pathSegment(id)}/history") }.body as? JSONArray) ?: JSONArray()
+
+    suspend fun reconcileWorkflow(scope: Scope, id: String, stepId: String, outcome: String, evidenceRef: String, reason: String, idempotencyKey: String): EngineWorkflowInstance {
+        require(idempotencyKey.isNotBlank() && reason.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey))
+            .put("step_id", stepId).put("outcome", outcome).put("evidence_ref", evidenceRef).put("reason", reason)
+        val result = network { http.postResponse(scope, "/api/v2/workflow-instances/${pathSegment(id)}/reconcile", body, idempotencyKey) }
+        return decoder.decodeWorkflowInstance(result.body.toString())
+    }
+
+    suspend fun cancelWorkflow(scope: Scope, id: String, reason: String, idempotencyKey: String): EngineWorkflowInstance {
+        require(idempotencyKey.isNotBlank() && reason.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey)).put("reason", reason)
+        val result = network { http.postResponse(scope, "/api/v2/workflow-instances/${pathSegment(id)}/cancel", body, idempotencyKey) }
+        return decoder.decodeWorkflowInstance(result.body.toString())
+    }
+
+    private fun pathSegment(value: String) = java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
     suspend fun analyticsCatalog(scope: Scope): JSONObject = cached(scope, "analytics:catalog", "reports") {
         http.get(scope, "/api/v1/analytics/catalog") as? JSONObject ?: JSONObject()
