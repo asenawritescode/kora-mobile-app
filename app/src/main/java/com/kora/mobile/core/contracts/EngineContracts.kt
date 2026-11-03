@@ -82,6 +82,15 @@ data class EngineWorkflowInstance(
     val subjectType: String,
     val businessScope: BusinessScope?,
 )
+data class EngineWorkflowDefinitionRef(val id: String, val version: Int, val digest: String)
+
+data class EngineResponseReceipt(
+    val requestId: String,
+    val decisionId: String,
+    val revision: String,
+    val status: String,
+    val continuationState: String?,
+)
 
 fun JSONObject.requiredObject(key: String): JSONObject = optJSONObject(key) ?: throw IllegalArgumentException("$key must be an object")
 fun JSONObject.requiredString(key: String): String = optString(key).takeIf(String::isNotBlank) ?: throw IllegalArgumentException("$key must be a non-empty string")
@@ -150,6 +159,17 @@ fun EngineContractDecoder.decodeWorkflowInstance(json: String): EngineWorkflowIn
     val value = decode("WorkflowInstance", json)
     val subject = value.requiredObject("subject")
     return EngineWorkflowInstance(value.requiredString("id"), value.requiredString("definition_id"), value.requiredInt("definition_version"), value.requiredString("current_step"), value.requiredString("status"), value.requiredString("revision"), subject.requiredString("id"), subject.requiredString("kind"), if (value.has("business_scope") && !value.isNull("business_scope")) value.requiredObject("business_scope").toBusinessScope() else null)
+}
+
+fun EngineContractDecoder.decodeWorkflowDefinitionRef(json: String): EngineWorkflowDefinitionRef {
+    val value = decode("WorkflowDefinitionRef", json)
+    return EngineWorkflowDefinitionRef(value.requiredString("definition_id"), value.requiredInt("version"), value.requiredString("digest"))
+}
+
+fun EngineContractDecoder.decodeResponseReceipt(json: String): EngineResponseReceipt {
+    val value = decode("ResponseReceipt", json)
+    val continuation = value.optJSONObject("continuation")
+    return EngineResponseReceipt(value.requiredString("request_id"), value.requiredString("decision_id"), value.requiredString("revision"), value.requiredString("status"), continuation?.optString("state")?.takeIf(String::isNotBlank))
 }
 
 private fun JSONObject.asSchemaRef() = EngineSchemaRef(requiredString("id"), requiredInt("version"))

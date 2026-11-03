@@ -271,7 +271,6 @@ class OfflineRecordRepository(
     private fun validateSnapshotIdentity(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, source: JSONObject, page: JSONObject, expectedHash: String?, expectedSubject: String?, expectedSnapshot: String?, expectedReplayPosition: String? = null) {
         require(page.getJSONObject("business_scope").toBusinessScope() == scope.businessScope && page.getLong("catalog_revision") == catalog.revision &&
             page.getString("subject_id") == scope.userId && schemaRef(page.getJSONObject("schema_revision")) == query.outputSchema &&
-            page.getString("fact_key_field") == query.offlineFactKey &&
             page.getJSONObject("source").let { sameSource(it, source) } && page.getString("input_hash") == sha256(source.get("input").toString()) &&
             (expectedHash == null || page.getString("input_hash") == expectedHash) &&
             (expectedSubject == null || page.getString("subject_id") == expectedSubject) &&
