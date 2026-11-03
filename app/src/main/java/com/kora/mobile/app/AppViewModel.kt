@@ -8,8 +8,6 @@ import com.kora.mobile.data.offline.FormPayloadSerializer
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kora.mobile.KoraApplication
-import com.kora.mobile.OutboxSyncWorker
-import com.kora.mobile.core.database.LocalMutation
 import com.kora.mobile.core.contracts.EngineApplicationCatalog
 import com.kora.mobile.core.contracts.EngineOperationReceipt
 import com.kora.mobile.core.contracts.EnginePublishedOperation
@@ -88,10 +86,7 @@ data class AppState(
     val formOpen: Boolean = false,
     val resolvingMutationId: String? = null,
     val requests: List<JSONObject> = emptyList(),
-    val queuedMutations: List<LocalMutation> = emptyList(),
-    val syncingMutations: Boolean = false,
     val offline: Boolean = false,
-    val offlineCoverage: com.kora.mobile.data.offline.OfflineCoverage = com.kora.mobile.data.offline.OfflineCoverage(),
     val posManifest: JSONObject? = null,
     val posLoading: Boolean = false,
     val posProducts: List<JSONObject> = emptyList(),
@@ -117,15 +112,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(AppState(serverUrl = app.instanceStore.current().origin, siteRef = app.instanceStore.current().siteRef.orEmpty()))
     val state: StateFlow<AppState> = _state.asStateFlow()
     private var scope: Scope? = null
-    private var outboxJob: Job? = null
-    private var outboxSyncJob: Job? = null
     private var recordRowsJob: Job? = null
-    private var scheduledMutationIds: Set<String> = emptySet()
     private val connectivityManager = app.getSystemService(ConnectivityManager::class.java)
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             app.workspace.networkAvailable = true
-            syncQueuedMutations()
         }
         override fun onLost(network: Network) { app.workspace.markNetworkUnavailable() }
     }
@@ -134,7 +125,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val connected = connectivityManager.activeNetwork?.let { connectivityManager.getNetworkCapabilities(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) } == true
         if (!connected) app.workspace.markNetworkUnavailable()
         viewModelScope.launch { app.workspace.offline.collect { offline -> _state.update { it.copy(offline = offline) } } }
-        viewModelScope.launch { app.workspace.coverage.collect { coverage -> _state.update { it.copy(offlineCoverage = coverage) } } }
         restoreCachedSession()
         runCatching { connectivityManager.registerDefaultNetworkCallback(networkCallback) }
     }
@@ -180,17 +170,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val activeScope = scope!!
             app.workspace.bindAnonymousSession(loginScope, activeScope)
             app.activateScope(activeScope)
-            app.workspace.clearDrafts(activeScope)
             app.getSharedPreferences("kora_session", 0).edit().putString("last_user", user.name).putString("last_email", user.email).putString("last_full_name", user.fullName).apply()
             _state.update { it.copy(stage = AppStage.WORKSPACE, user = user, busy = false, message = null, offline = false) }
-            loadWorkspace(); observeLocalWork(); if (!_state.value.offline) syncQueuedMutations()
-            downloadForOffline()
+            loadWorkspace()
         } catch (error: Exception) { _state.update { it.copy(busy = false, message = error.message ?: "Sign in failed") } }
     }
 
     fun selectSection(section: String) {
         _state.update { it.copy(section = section, selectedDoctype = null, selectedRecord = null, editingRecord = null, formOpen = false, formValues = emptyMap(), selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, selectedPublishedRow = null, operationReceipt = null, surfaceError = null) }
-        when (section) { "Requests" -> loadRequests(); "Work" -> loadWorkspace(); "POS" -> loadPosCatalog(); "Reports" -> loadAnalytics(); "Sync" -> if (!_state.value.offline) syncQueuedMutations(showMessage = true) }
+        when (section) { "Requests" -> loadRequests(); "Work" -> loadWorkspace(); "Reports" -> loadAnalytics() }
     }
 
     fun openPublishedQuery(query: EnginePublishedQuery) {
@@ -268,26 +256,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } catch (error: Exception) {
             _state.update { it.copy(surfaceLoading = false, operationMayHaveRun = true, surfaceError = error.message ?: "Could not check the operation receipt") }
         }
-    }
-
-    fun downloadForOffline() = viewModelScope.launch {
-        val active = scope ?: return@launch
-        if (!_state.value.offlineCoverage.downloading) app.workspace.prepareOffline(active)
-    }
-
-    fun reviewSyncIssue(mutation: LocalMutation) = viewModelScope.launch {
-        val active = scope ?: return@launch
-        val item = _state.value.navigation?.modules?.flatMap { it.doctypes }?.firstOrNull { it.resourceName == mutation.doctype } ?: return@launch
-        openDoctype(item).join()
-        val record = (mutation.localId ?: mutation.recordName)?.let { app.workspace.record(active, mutation.doctype, it) } ?: return@launch
-        editRecord(record)
-        _state.update { it.copy(resolvingMutationId = mutation.id, message = mutation.lastError ?: "Review and save your correction") }
-    }
-
-    fun acceptServerVersion(mutation: LocalMutation) = viewModelScope.launch {
-        val active = scope ?: return@launch
-        app.workspace.localRecords.acceptServer(active, mutation.id)
-        syncQueuedMutations()
     }
 
     fun selectSavedReport(name: String) {
@@ -559,8 +527,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     message = "Sale saved",
                 )
             }
-            observeLocalWork()
-            if (app.workspace.networkAvailable) syncQueuedMutations()
         } catch (error: Exception) {
             _state.update { it.copy(posSaving = false, message = error.message ?: "Could not save sale on this device") }
         }
@@ -814,42 +780,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(busy = false, editingRecord = null, formOpen = false, formValues = emptyMap(),
                     message = "Saved")
             }
-            observeLocalWork()
-            if (app.workspace.networkAvailable) syncQueuedMutations()
         } catch (error: Exception) {
             _state.update { it.copy(busy = false, message = error.message ?: "Could not save on this device") }
-        }
-    }
-
-    fun syncQueuedMutations(showMessage: Boolean = false) {
-        if (outboxSyncJob?.isActive == true) return
-        outboxSyncJob = viewModelScope.launch {
-            val active = scope ?: return@launch
-            _state.update { it.copy(syncingMutations = true) }
-            val (synced, error) = app.workspace.syncQueuedRecords(active, force = showMessage)
-            _state.update { current ->
-                val remaining = current.queuedMutations.size - synced
-                current.copy(
-                    syncingMutations = false,
-                    offline = app.workspace.offline.value,
-                    message = when {
-                        error != null && showMessage -> "${remaining.coerceAtLeast(0)} change${if (remaining == 1) "" else "s"} waiting to sync · ${error.message ?: "Could not sync"}"
-                        error != null -> null
-                        showMessage && synced > 0 -> "Synced $synced saved record${if (synced == 1) "" else "s"}"
-                        else -> current.message
-                    },
-                )
-            }
-            observeLocalWork()
-            if (error == null && _state.value.posManifest != null) {
-                val productType = _state.value.posManifest?.optJSONObject("spec")?.optJSONArray("resources")
-                    ?.optJSONObject(0)?.optJSONObject("params")?.optString("doctype").orEmpty()
-                if (productType.isNotBlank()) {
-                    runCatching { app.workspace.records(active, resourceRoute(productType)) }.getOrNull()?.let { rows ->
-                        _state.update { it.copy(posProducts = (0 until rows.length()).mapNotNull(rows::optJSONObject)) }
-                    }
-                }
-            }
         }
     }
 
@@ -857,7 +789,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun logout() = viewModelScope.launch {
         val previous = scope
         scope = null
-        recordRowsJob?.cancel(); outboxJob?.cancel(); outboxSyncJob?.cancel()
+        recordRowsJob?.cancel()
         app.getSharedPreferences("kora_session", 0).edit().clear().apply()
         _state.update { AppState(stage = AppStage.SERVER, serverUrl = app.instanceStore.current().origin, siteRef = app.instanceStore.current().siteRef.orEmpty()) }
         previous?.let { app.workspace.logout(it) }
@@ -868,7 +800,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val old = app.instanceStore.current()
             val instance = app.instanceStore.save(url, old.siteRef)
             scope = null
-            recordRowsJob?.cancel(); outboxJob?.cancel(); outboxSyncJob?.cancel()
+            recordRowsJob?.cancel()
             app.getSharedPreferences("kora_session", 0).edit().clear().apply()
             _state.update { AppState(stage = AppStage.LOGIN, serverUrl = instance.origin, siteRef = instance.siteRef.orEmpty(), message = "Sign in to this server. Saved work stays with its original workspace.") }
         } catch (error: Exception) {
@@ -877,8 +809,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun restoreUsbServer() = viewModelScope.launch {
-        if (scope?.origin == "http://localhost:8000") syncQueuedMutations(showMessage = true)
-        else changeServer("http://localhost:8000")
+        if (scope?.origin != "http://localhost:8000") changeServer("http://localhost:8000")
     }
 
     private fun restoreCachedSession() = viewModelScope.launch {
@@ -892,19 +823,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val restored = Scope(instance.id, instance.origin, instance.siteRef, userId)
         scope = restored
         app.activateScope(restored)
-        app.workspace.clearDrafts(restored)
-        app.workspace.restoreCoverage(restored)
         // Restore the locally authenticated workspace immediately. Network validation runs separately.
         val cachedUser = CurrentUser(userId, saved.getString("last_email", "").orEmpty(), saved.getString("last_full_name", "Your workspace").orEmpty())
         _state.update { it.copy(stage = AppStage.WORKSPACE, user = cachedUser, offline = app.workspace.offline.value) }
-        loadWorkspace(); observeLocalWork()
+        loadWorkspace()
         if (!app.workspace.networkAvailable) return@launch
         try {
             val user = parseUser(app.workspace.currentUser(restored))
             if (user.name != userId) throw IllegalStateException("Sign in again to sync this workspace")
             _state.update { it.copy(user = user) }
-            syncQueuedMutations()
-            if (_state.value.offlineCoverage.completedAt == null || !app.workspace.localRecords.hasPullCursor(restored)) downloadForOffline()
         } catch (error: Exception) {
             _state.update { it.copy(message = if ((error as? com.kora.mobile.domain.model.KoraError)?.status == 401) "Sign in again to sync. Your saved work is safe on this device." else null) }
         }
@@ -915,17 +842,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         try {
             val catalog = app.workspace.publishedCatalog(active)
             val catalogCached = app.workspace.lastResponseWasCached
-            val config = runCatching { parseNavigation(app.workspace.navigation(active)) }.getOrDefault(NavigationConfig())
-            val navCached = app.workspace.lastResponseWasCached
             val brandingResponse = runCatching { app.workspace.branding(active) }.getOrNull()
             val brandingJson = brandingResponse?.optJSONObject("branding") ?: brandingResponse
-            val tenantBranding = brandingJson?.let { parseBranding(it) } ?: config.branding
+            val tenantBranding = brandingJson?.let { parseBranding(it) }
             val savedTheme = app.getSharedPreferences("kora_preferences", 0).getString("theme_mode", null)
             val themeMode = (savedTheme ?: tenantBranding?.defaultMode ?: "system").lowercase()
-            val hasProducts = config.modules.flatMap { it.doctypes }.any { it.name.equals("Product", true) }
-            val posManifest = if (hasProducts) runCatching { app.workspace.pageManifest(active, "/pos") }.getOrNull() else null
-            _state.update { it.copy(navigation = config.copy(branding = tenantBranding), publishedCatalog = catalog, selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, tenantBranding = tenantBranding, themeMode = themeMode, posManifest = posManifest, offline = catalogCached || navCached || app.workspace.lastResponseWasCached, message = null, surfaceError = null) }
-        } catch (error: Exception) { _state.update { it.copy(offline = true, message = null, surfaceError = error.message ?: "Published workspace catalog could not be loaded") } }
+            _state.update { it.copy(navigation = null, publishedCatalog = catalog, selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, tenantBranding = tenantBranding, themeMode = themeMode, posManifest = null, offline = catalogCached || app.workspace.lastResponseWasCached, message = null, surfaceError = null) }
+        } catch (error: Exception) { _state.update { it.copy(publishedCatalog = null, selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, offline = true, message = null, surfaceError = error.message ?: "Published workspace catalog could not be loaded") } }
     }
 
     private fun loadRequests() = viewModelScope.launch {
@@ -935,22 +858,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val items = response.optJSONArray("items") ?: JSONArray()
             _state.update { it.copy(requests = (0 until items.length()).mapNotNull { i -> items.optJSONObject(i) }, offline = app.workspace.lastResponseWasCached, message = null) }
         } catch (error: Exception) { _state.update { it.copy(offline = true, message = error.message ?: "Could not load requests") } }
-    }
-
-    private fun observeLocalWork() {
-        val active = scope ?: return
-        outboxJob?.cancel()
-        outboxJob = viewModelScope.launch {
-            app.workspace.queuedMutations(active).collect { list ->
-                _state.update { it.copy(queuedMutations = list) }
-                val ids = list.map { it.id }.toSet()
-                if (ids.isEmpty()) scheduledMutationIds = emptySet()
-                else if (!scheduledMutationIds.containsAll(ids)) {
-                    scheduledMutationIds = ids
-                    OutboxSyncWorker.schedule(app, active)
-                }
-            }
-        }
     }
 
     private fun parseUser(raw: JSONObject): CurrentUser {

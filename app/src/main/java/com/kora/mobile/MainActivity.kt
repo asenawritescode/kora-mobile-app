@@ -299,14 +299,9 @@ private fun ServerPill(url: String, site: String, onChange: () -> Unit) {
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
-    val manifestComponents = state.posManifest?.optJSONObject("spec")?.optJSONObject("layout")?.optJSONArray("children")
-    val hasProductGrid = manifestComponents?.let { array -> (0 until array.length()).any { array.optJSONObject(it)?.optString("component") == "product_grid" } } == true
-    val hasPaymentPanel = manifestComponents?.let { array -> (0 until array.length()).any { array.optJSONObject(it)?.optString("component") == "payment_panel" } } == true
-    val hasPos = hasProductGrid && hasPaymentPanel
     val tabs = buildList {
         add("Home" to Icons.Filled.Home)
         add("Browse" to Icons.Filled.Inventory2)
-        if (hasPos) add("POS" to Icons.Filled.ShoppingCart)
         add("Requests" to Icons.Filled.ListAlt)
         add("Reports" to Icons.Filled.BarChart)
     }
@@ -612,7 +607,8 @@ private fun DashboardScreen(state: AppState, vm: AppViewModel) {
         items(modules, key = { it.id }) { module ->
             val queries = catalog?.queries?.filter { it.ownerModuleId == module.id }.orEmpty()
             val projections = catalog?.projections?.filter { it.ownerModuleId == module.id }.orEmpty()
-            ModuleCard(module.id, queries.size + projections.size, (queries.map { it.presentation.optString("title").ifBlank { it.name } } + projections.map { it.id }).take(3)) { vm.selectSection("Work") }
+            val operations = catalog?.operations?.filter { it.ownerModuleId == module.id }.orEmpty()
+            ModuleCard(module.id, queries.size + projections.size + operations.size, (queries.map { it.presentation.optString("title").ifBlank { it.name } } + projections.map { it.id } + operations.map { it.presentation.optString("title").ifBlank { it.operationRef } }).take(3)) { vm.selectSection("Work") }
         }
         if (normalizedQuery.isNotBlank()) {
             catalog?.queries?.filter { it.name.contains(normalizedQuery, true) || it.ownerModuleId.contains(normalizedQuery, true) }?.forEach { item ->
@@ -665,7 +661,7 @@ private fun WorkScreen(state: AppState, vm: AppViewModel) {
                     }
                 }
             }
-            if (catalog.blockers.isNotEmpty()) item { Text("${catalog.blockers.sumOf { it.count }} capability blockers are reported by Engine.", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp)) }
+            if (catalog.blockers.isNotEmpty()) item { Text("Engine reported capability blockers: ${catalog.blockers.joinToString { "${it.code} (${it.count})" }}", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp)) }
         }
     }
 }
@@ -1922,54 +1918,14 @@ private fun RequestsScreen(state: AppState) {
 @Composable
 private fun SyncScreen(state: AppState, vm: AppViewModel) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
-        item { Spacer(Modifier.height(8.dp)); Text("Offline & sync", fontSize = 26.sp, fontWeight = FontWeight.Bold); Text("Your saved records", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
+        item { Spacer(Modifier.height(8.dp)); Text("Connection", fontSize = 26.sp, fontWeight = FontWeight.Bold); Text(if (state.offline) "Offline" else "Connected", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
         item {
-            OutlinedButton(onClick = { vm.logout() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
-                Text("Change server address")
-            }
+            EmptyCard(
+                if (state.offline) "Reconnect to Kora" else "Published workspace is online",
+                "This client needs a connection to load published data and submit business actions.",
+            )
         }
         if (state.message != null) item { MessageBanner(state.message, state.offline && state.message.contains("waiting", true)) }
-        item {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Available on this device", fontWeight = FontWeight.SemiBold)
-                val coverage = state.offlineCoverage
-                Text(when {
-                    coverage.downloading -> "Downloading ${coverage.completedTypes} of ${coverage.totalTypes} record types…"
-                    coverage.error != null -> "Download incomplete · ${coverage.error}"
-                    coverage.completedAt != null -> "Workspace downloaded · " + java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(coverage.completedAt))
-                    else -> "Download the workspace before working without a connection."
-                }, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedButton(onClick = { vm.downloadForOffline() }, enabled = !coverage.downloading) { Text(if (coverage.completedAt == null) "Download workspace" else "Update download") }
-            }
-        }
-        item { SectionHeading("Waiting to sync", "${state.queuedMutations.size} saved") }
-        if (state.queuedMutations.isNotEmpty()) {
-            items(state.queuedMutations, key = { it.id }) { mutation ->
-                val label = if (mutation.doctype.startsWith("@view-action/")) "POS sale" else mutation.doctype.replace('-', ' ').split(' ').joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
-                Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface)) {
-                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.CloudDone, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(label, fontWeight = FontWeight.Medium)
-                            Text(mutation.displayName ?: mutation.recordName ?: "New record", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Text(when (mutation.status) { "conflict" -> "Conflict"; "rejected" -> "Needs attention"; "sent" -> "Syncing"; else -> "Pending" }, fontSize = 12.sp, color = if (mutation.status in setOf("conflict", "rejected")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    if (mutation.lastError != null) Text(mutation.lastError, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (mutation.status in setOf("conflict", "rejected")) Row(Modifier.padding(horizontal = 8.dp)) {
-                        if (!mutation.doctype.startsWith("@view-action/")) TextButton(onClick = { vm.reviewSyncIssue(mutation) }) { Text("Review correction") }
-                        TextButton(onClick = { vm.acceptServerVersion(mutation) }) { Text(if (mutation.localId == null || mutation.recordName == null) "Discard local change" else "Use server version") }
-                    }
-                }
-            }
-            item {
-                Button(onClick = { vm.syncQueuedMutations(showMessage = true) }, enabled = !state.syncingMutations, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
-                    if (state.syncingMutations) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Text("Sync now")
-                }
-            }
-        } else item { EmptyCard("Everything is synced", "Records you save offline will appear here until they reach Kora.") }
         item { OutlinedButton(onClick = { vm.logout() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Outlined.Logout, null); Spacer(Modifier.width(8.dp)); Text("Sign out") } }
     }
 }
@@ -1991,7 +1947,7 @@ private fun ModuleCard(title: String, count: Int, previews: List<String>, onClic
         Column(Modifier.padding(17.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(40.dp).background(androidx.compose.material3.MaterialTheme.colorScheme.secondary, RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Inventory2, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary) }
-                Spacer(Modifier.width(11.dp)); Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.SemiBold); Text("$count record types", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
+                Spacer(Modifier.width(11.dp)); Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.SemiBold); Text("$count published surfaces", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
                 Icon(Icons.Outlined.ChevronRight, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (previews.isNotEmpty()) { Spacer(Modifier.height(14.dp)); Divider(color = androidx.compose.material3.MaterialTheme.colorScheme.outline.copy(alpha = .55f)); Spacer(Modifier.height(10.dp)); Text(previews.joinToString("   ·   "), fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }

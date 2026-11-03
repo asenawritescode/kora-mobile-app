@@ -111,6 +111,8 @@ class WorkspaceRepositoryPublishedContractsTest {
             assertEquals("exec-9", recovered?.executionId)
             assertEquals("tenant-a", receipt.businessScope.tenantId)
             assertNull(db.localDao.getEntry(scope.key, "published-catalog"))
+            assertTrue(db.localDao.records(scope.key, "sales.orders").isEmpty())
+            assertTrue(db.localDao.queuedMutations(scope.key).isEmpty())
             assertTrue(query.route.startsWith("/api/v1/"))
         } finally {
             db.close()
