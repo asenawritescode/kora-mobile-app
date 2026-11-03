@@ -38,6 +38,7 @@ data class EnginePublishedQuery(
     val offlineEligible: Boolean,
     val allowedFields: List<String>,
     val presentation: JSONObject,
+    val offlineFactKey: String?,
 )
 data class EnginePublishedProjection(
     val ownerModuleId: String,
@@ -131,7 +132,7 @@ fun EngineContractDecoder.decodeApplicationCatalog(json: String): EngineApplicat
     val entityChoices = value.optJSONArray("allowed_entity_choices") ?: throw IllegalArgumentException("allowed_entity_choices must be an array")
     val queryList = (0 until queries.length()).map { index ->
         val item = queries.getJSONObject(index)
-        EnginePublishedQuery(item.requiredString("owner_module_id"), item.requiredString("name"), item.requiredString("route"), item.requiredObject("input_schema").asSchemaRef(), item.requiredObject("output_schema").asSchemaRef(), item.requiredString("scope_policy"), item.requiredInt("page_limit"), item.optBoolean("offline_eligible"), item.strings("allowed_fields"), item.requiredObject("presentation"))
+        EnginePublishedQuery(item.requiredString("owner_module_id"), item.requiredString("name"), item.requiredString("route"), item.requiredObject("input_schema").asSchemaRef(), item.requiredObject("output_schema").asSchemaRef(), item.requiredString("scope_policy"), item.requiredInt("page_limit"), item.optBoolean("offline_eligible"), item.strings("allowed_fields"), item.requiredObject("presentation"), item.optString("offline_fact_key").takeIf(String::isNotBlank))
     }
     val projectionList = (0 until projections.length()).map { index ->
         val item = projections.getJSONObject(index)

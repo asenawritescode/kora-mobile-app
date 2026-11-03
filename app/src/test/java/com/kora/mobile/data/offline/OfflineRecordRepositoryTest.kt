@@ -260,7 +260,7 @@ class OfflineRecordRepositoryTest {
         val rowSchema = JSONObject().put("type", "object").put("required", org.json.JSONArray().put("id"))
             .put("properties", JSONObject().put("id", JSONObject().put("type", "string")))
         val query = EnginePublishedQuery("sales.orders", "list", "/api/v1/modules/sales.orders/queries/list", inputRef, outputRef,
-            "tenant_shared", 10, true, listOf("id"), JSONObject())
+            "tenant_shared", 10, true, listOf("id"), JSONObject(), "id")
         return catalog(4).copy(queries = listOf(query), schemas = listOf(
             EngineSchemaDocument(inputRef, JSONObject().put("type", "object")),
             EngineSchemaDocument(outputRef, JSONObject().put("type", "array").put("items", rowSchema)),
@@ -270,7 +270,7 @@ class OfflineRecordRepositoryTest {
     private fun sourceJson(source: JSONObject) = JSONObject().put("owner_module_id", source.getString("owner_module_id"))
         .put("query_name", source.getString("query_name")).put("input_schema", source.getJSONObject("input_schema")).put("input", source.get("input"))
 
-    private fun snapshotJson(source: JSONObject) = JSONObject().put("source", sourceJson(source)).put("input_hash", sha256("{}"))
+    private fun snapshotJson(source: JSONObject) = JSONObject().put("source", sourceJson(source)).put("fact_key_field", "id").put("input_hash", sha256("{}"))
         .put("business_scope", JSONObject().put("tenant_id", "tenant-a").put("kind", "tenant")).put("subject_id", "alice")
         .put("schema_revision", JSONObject().put("id", "feed.output").put("version", 1)).put("catalog_revision", 4)
         .put("snapshot_token", "snapshot-1").put("replay_position", "cursor-1").put("rows", org.json.JSONArray().put(JSONObject().put("id", "row-1"))).put("complete", true)

@@ -162,7 +162,7 @@ class OfflineRecordRepository(
     }
 
     suspend fun bootstrap(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any, limit: Int? = null): JSONObject {
-        require(catalog.businessScope == scope.businessScope && catalog.queries.any { it == query && it.offlineEligible }) { "Query is not eligible for offline bootstrap" }
+        require(catalog.businessScope == scope.businessScope && catalog.queries.any { it == query && it.offlineEligible } && !query.offlineFactKey.isNullOrBlank()) { "Query is not eligible for offline bootstrap" }
         validateCatalogValue(catalog, query.inputSchema, input)
         val source = JSONObject().put("owner_module_id", query.ownerModuleId).put("query_name", query.name)
             .put("input_schema", JSONObject().put("id", query.inputSchema.id).put("version", query.inputSchema.version)).put("input", input)
@@ -177,7 +177,7 @@ class OfflineRecordRepository(
         validateSnapshotIdentity(scope, catalog, query, source, decoded, expectedHash = null, expectedSubject = null, expectedSnapshot = null)
         val rows = decoded.opt("rows") as? JSONArray ?: throw IllegalArgumentException("Snapshot rows must be an array")
         val all = mutableListOf<Pair<String, Any>>()
-        appendSnapshotRows(rows, all)
+        appendSnapshotRows(rows, all, requireNotNull(query.offlineFactKey))
         val inputHash = decoded.getString("input_hash")
         val subjectId = decoded.getString("subject_id")
         val snapshotToken = decoded.getString("snapshot_token")
@@ -193,7 +193,7 @@ class OfflineRecordRepository(
             decoded = decoder.decode("OfflineSnapshotPage", response.toString())
             validateSnapshotIdentity(scope, catalog, query, source, decoded, inputHash, subjectId, snapshotToken, replayPosition)
             val page = decoded.optJSONArray("rows") ?: throw IllegalArgumentException("Snapshot rows must be an array")
-            appendSnapshotRows(page, all)
+            appendSnapshotRows(page, all, requireNotNull(query.offlineFactKey))
         }
         validateCatalogValue(catalog, query.outputSchema, JSONArray(all.map { it.second }))
         require(all.map { it.first }.distinct().size == all.size) { "Offline snapshot contains duplicate fact keys" }
@@ -241,7 +241,7 @@ class OfflineRecordRepository(
                 if (change.getBoolean("deleted")) continue
                 val data = change.optJSONObject("data") ?: throw IllegalArgumentException("Non-deletion feed change omitted its full row")
                 validateQueryRow(catalog, query.outputSchema, data)
-                require(factKey(data) == change.getString("fact_key")) { "Offline feed fact key does not match the published row identity" }
+                require(factKey(data, requireNotNull(query.offlineFactKey)) == change.getString("fact_key")) { "Offline feed fact key does not match the published row identity" }
             }
             val nextCursor = response.optString("next_page_cursor").takeIf(String::isNotBlank)
             if (response.getBoolean("has_more")) require(nextCursor != null) { "Feed page declared more changes without a page cursor" }
@@ -271,6 +271,7 @@ class OfflineRecordRepository(
     private fun validateSnapshotIdentity(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, source: JSONObject, page: JSONObject, expectedHash: String?, expectedSubject: String?, expectedSnapshot: String?, expectedReplayPosition: String? = null) {
         require(page.getJSONObject("business_scope").toBusinessScope() == scope.businessScope && page.getLong("catalog_revision") == catalog.revision &&
             page.getString("subject_id") == scope.userId && schemaRef(page.getJSONObject("schema_revision")) == query.outputSchema &&
+            page.getString("fact_key_field") == query.offlineFactKey &&
             page.getJSONObject("source").let { sameSource(it, source) } && page.getString("input_hash") == sha256(source.get("input").toString()) &&
             (expectedHash == null || page.getString("input_hash") == expectedHash) &&
             (expectedSubject == null || page.getString("subject_id") == expectedSubject) &&
@@ -296,15 +297,16 @@ class OfflineRecordRepository(
 
     private fun schemaRef(value: JSONObject) = EngineSchemaRef(value.getString("id"), value.getInt("version"))
 
-    private fun appendSnapshotRows(rows: JSONArray, target: MutableList<Pair<String, Any>>) {
+    private fun appendSnapshotRows(rows: JSONArray, target: MutableList<Pair<String, Any>>, factKeyField: String) {
         for (i in 0 until rows.length()) {
             val row = rows.optJSONObject(i) ?: throw IllegalArgumentException("Snapshot row must be an object")
-            target += factKey(row) to row
+            target += factKey(row, factKeyField) to row
         }
     }
 
-    private fun factKey(row: JSONObject): String = (row.optString("fact_key").takeIf(String::isNotBlank) ?: row.optString("id").takeIf(String::isNotBlank))
-        ?: throw IllegalArgumentException("Offline source rows must expose a stable fact_key or id")
+    private fun factKey(row: JSONObject, field: String): String = row.opt(field)?.takeUnless { it == JSONObject.NULL }?.toString()
+        ?.takeIf(String::isNotBlank)?.also { require(it.length <= 256 && (row.opt(field) is String || row.opt(field) is Number)) }
+        ?: throw IllegalArgumentException("Offline source row is missing its declared stable fact key")
 
     suspend fun savedCheckpoint(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any): JSONObject? {
         val hash = sha256(input.toString())
