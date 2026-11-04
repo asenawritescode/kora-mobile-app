@@ -15,10 +15,16 @@ interface PayloadCipher {
     fun decrypt(encoded: String): String?
 }
 
-class SecretVault(context: Context) : PayloadCipher {
+interface SessionSecretStore {
+    fun put(key: String, value: String)
+    fun get(key: String): String?
+    fun remove(key: String)
+}
+
+class SecretVault(context: Context) : PayloadCipher, SessionSecretStore {
     private val prefs = context.getSharedPreferences("kora_secure_sessions", Context.MODE_PRIVATE)
 
-    fun put(key: String, value: String) { prefs.edit().putString(key, encrypt(value)).apply() }
+    override fun put(key: String, value: String) { prefs.edit().putString(key, encrypt(value)).apply() }
 
     override fun encrypt(value: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -36,12 +42,12 @@ class SecretVault(context: Context) : PayloadCipher {
         String(cipher.doFinal(ciphertext), Charsets.UTF_8)
     }.getOrNull()
 
-    fun get(key: String): String? {
+    override fun get(key: String): String? {
         val encoded = prefs.getString(key, null) ?: return null
         return decrypt(encoded)
     }
 
-    fun remove(key: String) { prefs.edit().remove(key).apply() }
+    override fun remove(key: String) { prefs.edit().remove(key).apply() }
 
     private fun secretKey(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

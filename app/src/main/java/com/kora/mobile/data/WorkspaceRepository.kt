@@ -48,7 +48,7 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
             refreshJobs[key] = background.launch { try { network(block) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { /* saved data stays visible */ } }
         }
     }
-    fun copySession(fromOrigin: String, toOrigin: String, siteRef: String?) = http.copySession(fromOrigin, toOrigin, siteRef)
+    fun bindAnonymousSession(from: Scope, to: Scope) = http.bindAnonymousSession(from, to)
     // Compatibility for old callers: cache use is no longer confused with connectivity.
     val lastResponseWasCached: Boolean get() = _offline.value
 

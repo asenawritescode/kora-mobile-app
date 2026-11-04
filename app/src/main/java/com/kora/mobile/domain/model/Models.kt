@@ -43,7 +43,21 @@ data class FieldConstraint(
     val message: String = "",
     val condition: String? = null,
 )
-data class Scope(val instanceId: String, val origin: String, val siteRef: String?, val userId: String) {
-    val key: String get() = listOf(origin.trimEnd('/'), siteRef.orEmpty(), userId).joinToString("|")
+data class BusinessScope(val tenantId: String, val kind: String = "tenant", val legalEntityId: String? = null) {
+    init {
+        require(tenantId.isNotBlank()) { "Canonical tenant ID is required" }
+        require((kind == "tenant" && legalEntityId == null) || (kind == "legal_entity" && !legalEntityId.isNullOrBlank())) { "Business scope shape is invalid" }
+    }
+    fun toWire(): org.json.JSONObject = org.json.JSONObject().put("tenant_id", tenantId).put("kind", kind).also { if (legalEntityId != null) it.put("legal_entity_id", legalEntityId) }
+}
+
+data class Scope(
+    val instanceId: String,
+    val origin: String,
+    val siteRef: String?,
+    val userId: String,
+    val businessScope: BusinessScope = BusinessScope(siteRef.orEmpty()),
+) {
+    val key: String get() = listOf(origin.trimEnd('/'), siteRef.orEmpty(), businessScope.tenantId, userId, businessScope.kind, businessScope.legalEntityId.orEmpty()).joinToString("|")
 }
 data class KoraError(val code: String, override val message: String, val status: Int? = null, val field: String? = null, val retryable: Boolean = false) : Exception(message)
