@@ -212,9 +212,19 @@ private fun ServerSetup(state: AppState, onNext: (String, String) -> Unit, onCon
                     KoraTextField(value = url, onValueChange = { value ->
                         url = value
                         Regex("/s/([^/?#]+)/?$").find(value.trim())?.groupValues?.get(1)?.let { site = it }
-                    }, modifier = Modifier.fillMaxWidth(), label = "Server URL", placeholder = { Text("https://api.kora.mradiafrica.com") }, singleLine = true)
+                    }, modifier = Modifier.fillMaxWidth(), label = "Server URL", placeholder = { Text("https://api.kora.mradiafrica.com") }, singleLine = true,
+                        trailingIcon = if (url.isNotBlank()) ({
+                            IconButton(onClick = { url = "" }, modifier = Modifier.semantics { contentDescription = "Clear server URL" }) {
+                                Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                            }
+                        }) else null)
                     Spacer(Modifier.height(12.dp))
-                    KoraTextField(value = site, onValueChange = { site = it }, modifier = Modifier.fillMaxWidth(), label = "Site ID *", placeholder = { Text("Your site ID") }, singleLine = true)
+                    KoraTextField(value = site, onValueChange = { site = it }, modifier = Modifier.fillMaxWidth(), label = "Site ID *", placeholder = { Text("Your site ID") }, singleLine = true,
+                        trailingIcon = if (site.isNotBlank()) ({
+                            IconButton(onClick = { site = "" }, modifier = Modifier.semantics { contentDescription = "Clear site ID" }) {
+                                Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                            }
+                        }) else null)
                     Spacer(Modifier.height(12.dp))
                     state.message?.let { MessageBanner(it, state.offline); Spacer(Modifier.height(10.dp)) }
                     Button(onClick = { onConnect(url, site.trim()) }, modifier = Modifier.fillMaxWidth().height(54.dp), enabled = !isBusy && url.isNotBlank() && site.isNotBlank(), shape = RoundedCornerShape(16.dp)) {
