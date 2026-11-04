@@ -26,6 +26,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.URI
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(RobolectricTestRunner::class)
@@ -290,13 +291,14 @@ class OfflineRecordRepositoryTest {
     @Test fun revokedOperationOrSchemaBlocksSavedIntentWithoutDispatch() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val sends = AtomicInteger()
+        val operationEligible = AtomicBoolean(true)
         val server = ServerSocket().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
         val thread = Thread {
             while (!server.isClosed) runCatching {
                 server.accept().use { socket ->
                     val request = readRequest(socket.getInputStream())
                     when (URI(request.first).path.removePrefix("/s/site")) {
-                        "/api/v2/offline/capabilities" -> respond(socket, capabilitiesJson())
+                        "/api/v2/offline/capabilities" -> respond(socket, capabilitiesJson(operationEligible.get()))
                         "/api/v2/offline/intents" -> {
                             sends.incrementAndGet()
                             respond(socket, JSONObject().put("receipts", org.json.JSONArray()))
@@ -326,6 +328,13 @@ class OfflineRecordRepositoryTest {
             assertNotNull(schemaResult.error)
             assertEquals("blocked", db.localDao.intent(scope.key, schemaIntentId)?.status)
             assertEquals(0, sends.get())
+
+            val capabilityIntentId = repo.enqueue(scope, originalCatalog, operation, JSONObject().put("amount", 5), "stable-capability-revocation-key")
+            operationEligible.set(false)
+            val capabilityResult = repo.sync(scope, originalCatalog)
+            assertNotNull(capabilityResult.error)
+            assertEquals("blocked", db.localDao.intent(scope.key, capabilityIntentId)?.status)
+            assertEquals(0, sends.get())
         } finally {
             db.close()
             server.close()
@@ -340,7 +349,20 @@ class OfflineRecordRepositoryTest {
             override fun remove(key: String) = Unit
         })), EngineContractDecoder.fromAssets(context))
 
-    private fun capabilitiesJson() = JSONObject().put("protocol_version", 2).put("catalog_revision", 4).put("max_batch_size", 20).put("max_page_size", 100).put("snapshot_lifetime_seconds", 86400)
+    private fun capabilitiesJson(operationEligible: Boolean = true): JSONObject {
+        val operations = org.json.JSONArray()
+        if (operationEligible) operations.put(JSONObject().put("operation_ref", "sales.orders~orders~create").put("owner_module_id", "sales.orders")
+            .put("capability", "orders.write").put("operation", "create").put("input_schema", JSONObject().put("id", "orders.input").put("version", 1))
+            .put("output_schema", JSONObject().put("id", "orders.output").put("version", 1)).put("availability", "available")
+            .put("permissions", org.json.JSONArray()).put("presentation", JSONObject()).put("offline_eligible", true))
+        val query = JSONObject().put("owner_module_id", "sales.orders").put("name", "list")
+            .put("capability", "sales.read").put("route", "/api/v1/modules/sales.orders/queries/list")
+            .put("input_schema", JSONObject().put("id", "feed.input").put("version", 1)).put("output_schema", JSONObject().put("id", "feed.output").put("version", 1))
+            .put("scope_policy", "tenant_shared").put("allowed_fields", org.json.JSONArray().put("id")).put("page_limit", 10)
+            .put("presentation", JSONObject()).put("offline_eligible", true).put("offline_fact_key", "id")
+        return JSONObject().put("protocol_version", 2).put("catalog_revision", 4).put("max_batch_size", 20).put("max_page_size", 100)
+            .put("snapshot_lifetime_seconds", 86400).put("offline_operations", operations).put("offline_queries", org.json.JSONArray().put(query))
+    }
     private fun receiptJson() = JSONObject().put("execution_id", "exec-4").put("operation_ref", "sales.orders~orders~create")
         .put("business_scope", JSONObject().put("tenant_id", "tenant-a").put("kind", "tenant"))
         .put("status", "completed").put("output_schema", JSONObject().put("id", "orders.output").put("version", 1))

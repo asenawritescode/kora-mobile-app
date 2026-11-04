@@ -55,8 +55,9 @@ class OfflineRecordRepository(
         var acknowledged = 0
         var firstError: Exception? = null
         if (!canSync(scope)) return@withLock SyncResult(0, KoraError("actor_changed", "Sign in again to sync this workspace", 401))
+        val capabilities: JSONObject
         try {
-            val capabilities = decoder.decode("OfflineCapabilities", remote.capabilities(scope).toString())
+            capabilities = decoder.decode("OfflineCapabilities", remote.capabilities(scope).toString())
             if (capabilities.getInt("protocol_version") != 2 || capabilities.getLong("catalog_revision") != catalog.revision || capabilities.getInt("max_batch_size") < 1) {
                 return@withLock SyncResult(0, KoraError("offline_capabilities_changed", "Refresh the published catalog before syncing saved actions", 409))
             }
@@ -72,6 +73,9 @@ class OfflineRecordRepository(
                 if (catalog.revision != original.catalogRevision || operation.availability != "available" || !operation.offlineEligible ||
                     original.inputSchema != JSONObject().put("id", operation.inputSchema.id).put("version", operation.inputSchema.version).toString()) {
                     throw KoraError("catalog_changed", "The actor catalog changed. Review this saved intent before syncing.", 409)
+                }
+                if (!declaresOfflineOperation(capabilities, operation)) {
+                    throw KoraError("module.operation_online_only", "Engine no longer declares this action eligible for offline replay", 409)
                 }
                 val input = decodeObject(original.encryptedInput)
                 val schema = catalog.schemas.singleOrNull { it.ref == operation.inputSchema }?.schema
@@ -168,6 +172,7 @@ class OfflineRecordRepository(
             .put("input_schema", JSONObject().put("id", query.inputSchema.id).put("version", query.inputSchema.version)).put("input", input)
         val capabilities = decoder.decode("OfflineCapabilities", remote.capabilities(scope).toString())
         require(capabilities.getLong("catalog_revision") == catalog.revision && capabilities.getInt("protocol_version") == 2) { "Offline feed capabilities changed; refresh the catalog" }
+        require(declaresOfflineQuery(capabilities, query)) { "Engine no longer declares this query eligible for offline bootstrap" }
         val pageLimit = minOf(limit ?: query.pageLimit, query.pageLimit, capabilities.getInt("max_page_size"))
         require(pageLimit > 0) { "Engine offline page size is unavailable" }
         val request = JSONObject().put("source", source).put("business_scope", scope.businessScope.toWire())
@@ -215,6 +220,7 @@ class OfflineRecordRepository(
             .put("input_schema", JSONObject().put("id", query.inputSchema.id).put("version", query.inputSchema.version)).put("input", input)
         val capabilities = decoder.decode("OfflineCapabilities", remote.capabilities(scope).toString())
         require(capabilities.getLong("catalog_revision") == catalog.revision && capabilities.getInt("protocol_version") == 2) { "Offline feed capabilities changed; refresh the catalog" }
+        require(declaresOfflineQuery(capabilities, query)) { "Engine no longer declares this query eligible for offline replay" }
         val pageLimit = minOf(limit, query.pageLimit, capabilities.getInt("max_page_size"))
         require(pageLimit > 0) { "Engine offline page size is unavailable" }
         val inputHash = checkpoint.getString("input_hash")
@@ -293,6 +299,28 @@ class OfflineRecordRepository(
     private fun sameSource(a: JSONObject, b: JSONObject): Boolean =
         a.optString("owner_module_id") == b.optString("owner_module_id") && a.optString("query_name") == b.optString("query_name") &&
             a.optJSONObject("input_schema")?.toString() == b.optJSONObject("input_schema")?.toString() && a.opt("input")?.toString() == b.opt("input")?.toString()
+
+    private fun declaresOfflineOperation(capabilities: JSONObject, operation: EnginePublishedOperation): Boolean {
+        val entries = capabilities.optJSONArray("offline_operations") ?: return false
+        return (0 until entries.length()).any { index ->
+            val entry = entries.optJSONObject(index) ?: return@any false
+            entry.optString("operation_ref") == operation.operationRef && entry.optBoolean("offline_eligible") &&
+                entry.optString("availability") == "available" &&
+                entry.optJSONObject("input_schema")?.let(::schemaRef) == operation.inputSchema &&
+                entry.optJSONObject("output_schema")?.let(::schemaRef) == operation.outputSchema
+        }
+    }
+
+    private fun declaresOfflineQuery(capabilities: JSONObject, query: EnginePublishedQuery): Boolean {
+        val entries = capabilities.optJSONArray("offline_queries") ?: return false
+        return (0 until entries.length()).any { index ->
+            val entry = entries.optJSONObject(index) ?: return@any false
+            entry.optString("owner_module_id") == query.ownerModuleId && entry.optString("name") == query.name &&
+                entry.optBoolean("offline_eligible") && entry.optString("offline_fact_key") == query.offlineFactKey &&
+                entry.optJSONObject("input_schema")?.let(::schemaRef) == query.inputSchema &&
+                entry.optJSONObject("output_schema")?.let(::schemaRef) == query.outputSchema
+        }
+    }
 
     private fun schemaRef(value: JSONObject) = EngineSchemaRef(value.getString("id"), value.getInt("version"))
 
