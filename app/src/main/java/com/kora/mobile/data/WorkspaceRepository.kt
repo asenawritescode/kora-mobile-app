@@ -5,6 +5,7 @@ import com.kora.mobile.core.database.LocalEntry
 import com.kora.mobile.core.database.LocalMutation
 import com.kora.mobile.core.database.KoraDatabase
 import com.kora.mobile.data.offline.OfflineRecordRepository
+import com.kora.mobile.data.offline.OfflineCoverage
 import com.kora.mobile.data.offline.RestRecordDataSource
 import com.kora.mobile.core.network.KoraHttpClient
 import com.kora.mobile.core.contracts.EngineApplicationCatalog
@@ -24,6 +25,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
 import org.json.JSONObject
@@ -36,6 +39,10 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
     private val refreshJobs = ConcurrentHashMap<String, Job>()
     private val _offline = MutableStateFlow(false)
     val offline: StateFlow<Boolean> = _offline
+    private val _coverage = MutableStateFlow(OfflineCoverage())
+    val coverage: StateFlow<OfflineCoverage> = _coverage
+    @Volatile private var coverageScopeKey: String? = null
+    private val downloadMutex = Mutex()
     var networkAvailable = true
     fun markNetworkUnavailable() { networkAvailable = false; _offline.value = true }
     private suspend fun <T> network(block: suspend () -> T): T = try {
@@ -57,6 +64,87 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
     val lastResponseWasCached: Boolean get() = _offline.value
 
     suspend fun probe(scope: Scope) { http.get(scope, "/api/ping") }
+
+    suspend fun restoreCoverage(scope: Scope) {
+        coverageScopeKey = scope.key
+        val completed = dao.getEntry(scope.key, "offline-prepared")
+        if (coverageScopeKey == scope.key) _coverage.value = OfflineCoverage(completedAt = completed?.fetchedAt)
+    }
+
+    fun activateCoverageScope(scope: Scope?) {
+        coverageScopeKey = scope?.key
+        _coverage.value = OfflineCoverage()
+    }
+
+    suspend fun prepareOffline(scope: Scope) = downloadMutex.withLock {
+        coverageScopeKey = scope.key
+        _coverage.value = _coverage.value.copy(downloading = true, error = null)
+        try {
+            val generation = network { localRecords.capabilities(scope) }.optLong("generation", -1)
+            if (generation < 0) throw com.kora.mobile.domain.model.KoraError("invalid_capabilities", "Kora did not identify the workspace configuration")
+            suspend fun store(key: String, category: String, fetch: suspend () -> Any): Any {
+                val result = network(fetch)
+                dao.putEntry(LocalEntry(scope.key, key, vault.encrypt(result.toString()), System.currentTimeMillis(), category))
+                return result
+            }
+            val rawTypes = network { http.get(scope, "/api/v1/system/navigation") as? JSONObject ?: JSONObject() }
+            val types = linkedMapOf<String, String>()
+            val modules = rawTypes.optJSONArray("modules") ?: JSONArray()
+            for (i in 0 until modules.length()) {
+                val docs = modules.optJSONObject(i)?.optJSONArray("doctypes") ?: JSONArray()
+                for (j in 0 until docs.length()) {
+                    val item = docs.optJSONObject(j) ?: continue
+                    val name = item.optString("name").takeIf(String::isNotBlank) ?: continue
+                    types[name] = item.optString("resource_name").ifBlank { name }
+                }
+            }
+            updateCoverage(scope) { OfflineCoverage(downloading = true, totalTypes = types.size) }
+            val schemas = mutableSetOf<String>()
+            fun routeFor(type: String) = types[type] ?: type.lowercase().replace(' ', '-')
+            suspend fun downloadSchema(type: String): JSONObject {
+                val route = routeFor(type)
+                return store("schema:$route", "schema") { http.get(scope, "/api/v1/system/doctype/$route") } as JSONObject
+            }
+            val dependencies = ArrayDeque<Pair<String, Boolean>>()
+            fun collectDependencies(schema: JSONObject) {
+                val fields = schema.optJSONArray("fields") ?: schema.optJSONObject("doctype")?.optJSONArray("fields") ?: JSONArray()
+                for (i in 0 until fields.length()) fields.optJSONObject(i)?.let { field ->
+                    if (!field.optBoolean("hidden") && field.optString("fieldtype") in setOf("Table", "Link")) {
+                        field.optString("options").takeIf(String::isNotBlank)?.let { dependencies.add(it to (field.optString("fieldtype") == "Table")) }
+                    }
+                }
+            }
+            suspend fun manifest(page: String) {
+                try { store("page-manifest:$page", "navigation") { http.get(scope, "/api/v1/page-manifests", mapOf("route" to page)) } }
+                catch (error: com.kora.mobile.domain.model.KoraError) { if (error.status != 404) throw error }
+            }
+            for ((name, _) in types) {
+                val schema = downloadSchema(name)
+                schemas += name
+                collectDependencies(schema)
+                val page = "/" + name.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
+                manifest(page)
+                updateCoverage(scope) { it.copy(completedTypes = it.completedTypes + 1) }
+            }
+            while (dependencies.isNotEmpty()) {
+                val (child, isTable) = dependencies.removeFirst()
+                if (!schemas.add(child)) continue
+                val schema = downloadSchema(child)
+                collectDependencies(schema)
+                if (!isTable) types[child] = routeFor(child)
+            }
+            if (types.keys.any { it.equals("Product", true) }) manifest("/pos")
+            network { localRecords.bootstrap(scope, types, generation) }
+            val completed = System.currentTimeMillis()
+            dao.putEntry(LocalEntry(scope.key, "offline-prepared", vault.encrypt(types.values.joinToString(",")), completed, "coverage"))
+            updateCoverage(scope) { it.copy(downloading = false, completedAt = completed) }
+        } catch (cancelled: CancellationException) { updateCoverage(scope) { it.copy(downloading = false) }; throw cancelled }
+        catch (error: Exception) { updateCoverage(scope) { it.copy(downloading = false, error = error.message ?: "Download interrupted") } }
+    }
+
+    private inline fun updateCoverage(scope: Scope, transform: (OfflineCoverage) -> OfflineCoverage) {
+        if (coverageScopeKey == scope.key) _coverage.value = transform(_coverage.value)
+    }
 
     /** Actor-filtered capabilities are the only source for module-owned workspace surfaces. */
     suspend fun publishedCatalog(scope: Scope): EngineApplicationCatalog {
@@ -276,6 +364,36 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
     suspend fun enqueueViewAction(scope: Scope, actionId: String, request: JSONObject, idempotencyKey: String, recordType: String = "sale", projection: JSONObject? = null, effect: JSONObject? = null, draftId: String? = null) {
         val context = request.optJSONObject("context") ?: JSONObject()
         localRecords.saveAction(scope, actionId, request, idempotencyKey, recordType, projection ?: JSONObject(context.toString()).put("items", context.optJSONArray("cart") ?: JSONArray()), effect, draftId)
+    }
+
+    suspend fun syncQueuedRecords(scope: Scope, force: Boolean = false): Pair<Int, Exception?> {
+        if (!canSync(scope)) return 0 to com.kora.mobile.domain.model.KoraError("actor_changed", "Sign in again to sync this workspace", 401)
+        if (dao.queuedMutations(scope.key).isEmpty() && !localRecords.hasPullCursor(scope)) return 0 to null
+        try {
+            val user = currentUser(scope)
+            if (user.optString("name") != scope.userId) return 0 to com.kora.mobile.domain.model.KoraError("actor_changed", "Sign in again to sync this workspace", 401)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { return 0 to error }
+        val result = localRecords.sync(scope, force)
+        var pullError: Exception? = null
+        if (localRecords.hasPullCursor(scope)) {
+            try { network { localRecords.pull(scope) } }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { pullError = error }
+        }
+        if ((pullError as? com.kora.mobile.domain.model.KoraError)?.code == "offline.rebootstrap_required") {
+            prepareOffline(scope)
+            pullError = _coverage.value.error?.let { com.kora.mobile.domain.model.KoraError("offline.rebootstrap_required", it, 409) }
+            if (pullError == null) {
+                try { network { localRecords.pull(scope) } }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) { pullError = error }
+            }
+        }
+        if (result.error == null && pullError == null) _offline.value = false
+        else if ((result.error as? com.kora.mobile.domain.model.KoraError)?.retryable == true) _offline.value = true
+        val error = if (result.retryAt != null) com.kora.mobile.domain.model.KoraError("retry_scheduled", "Saved changes will retry automatically", retryable = true) else result.error ?: pullError
+        return result.acknowledged to error
     }
 
 }

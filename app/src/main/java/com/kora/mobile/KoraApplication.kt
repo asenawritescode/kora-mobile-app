@@ -26,6 +26,12 @@ class KoraApplication : Application() {
 
     fun activateScope(scope: Scope) {
         getSharedPreferences("kora_session", MODE_PRIVATE).edit().putString("active_scope", scope.key).apply()
+        workspace.activateCoverageScope(scope)
+    }
+
+    fun clearActiveScope() {
+        getSharedPreferences("kora_session", MODE_PRIVATE).edit().remove("active_scope").apply()
+        workspace.activateCoverageScope(null)
     }
 
     fun isActiveScope(scope: Scope): Boolean = getSharedPreferences("kora_session", MODE_PRIVATE).getString("active_scope", null) == scope.key
