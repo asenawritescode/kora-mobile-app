@@ -17,6 +17,11 @@ class EngineContractDecoder(private val schema: JSONObject) {
         return validateNode(definition, value, "$")
     }
 
+    /** Validate an open module payload using the exact schema document in the actor catalog. */
+    fun validateSchemaDocument(schemaDocument: JSONObject, value: Any): List<Violation> {
+        return EngineContractDecoder(schemaDocument).validateNode(schemaDocument, value, "$")
+    }
+
     fun decode(contract: String, json: String): JSONObject {
         val value = try {
             JSONObject(json)
@@ -33,9 +38,17 @@ class EngineContractDecoder(private val schema: JSONObject) {
     private fun validateNode(node: JSONObject, value: Any?, path: String): List<Violation> {
         if (node.has("\$ref")) {
             val ref = node.optString("\$ref")
-            val name = ref.substringAfterLast('/')
-            val target = schema.optJSONObject("\$defs")?.optJSONObject(name)
-                ?: return listOf(Violation(path, "unresolved schema reference $ref"))
+            if (!ref.startsWith("#/")) return listOf(Violation(path, "unsupported schema reference $ref"))
+            var target: Any = schema
+            for (part in ref.removePrefix("#/").split('/')) {
+                val key = part.replace("~1", "/").replace("~0", "~")
+                target = when (target) {
+                    is JSONObject -> target.opt(key)
+                    is JSONArray -> key.toIntOrNull()?.let(target::opt)
+                    else -> null
+                } ?: return listOf(Violation(path, "unresolved schema reference $ref"))
+            }
+            if (target !is JSONObject) return listOf(Violation(path, "schema reference $ref is not an object"))
             return validateNode(target, value, path)
         }
         if (node.has("const") && node.opt("const") != value) {

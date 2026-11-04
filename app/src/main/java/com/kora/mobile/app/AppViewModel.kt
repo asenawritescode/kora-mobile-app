@@ -10,6 +10,12 @@ import androidx.lifecycle.viewModelScope
 import com.kora.mobile.KoraApplication
 import com.kora.mobile.OutboxSyncWorker
 import com.kora.mobile.core.database.LocalMutation
+import com.kora.mobile.core.contracts.EngineApplicationCatalog
+import com.kora.mobile.core.contracts.EngineOperationReceipt
+import com.kora.mobile.core.contracts.EnginePublishedOperation
+import com.kora.mobile.core.contracts.EnginePublishedProjection
+import com.kora.mobile.core.contracts.EnginePublishedQuery
+import com.kora.mobile.core.contracts.EngineQueryPage
 import com.kora.mobile.domain.model.Branding
 import com.kora.mobile.domain.model.CurrentUser
 import com.kora.mobile.domain.model.DocTypeNavItem
@@ -31,6 +37,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
 
+private fun parseJsonValue(raw: String): Any {
+    val parser = org.json.JSONTokener(raw)
+    val value = parser.nextValue()
+    require(parser.nextClean() == '\u0000') { "Input must contain exactly one JSON value" }
+    return value
+}
+
 data class AppState(
     val stage: AppStage = AppStage.SERVER,
     val serverUrl: String = "",
@@ -39,6 +52,19 @@ data class AppState(
     val busy: Boolean = false,
     val user: CurrentUser? = null,
     val navigation: NavigationConfig? = null,
+    val publishedCatalog: EngineApplicationCatalog? = null,
+    val selectedPublishedQuery: EnginePublishedQuery? = null,
+    val selectedProjection: EnginePublishedProjection? = null,
+    val selectedPublishedOperation: EnginePublishedOperation? = null,
+    val publishedPage: EngineQueryPage? = null,
+    val selectedPublishedRow: JSONObject? = null,
+    val publishedQueryInput: String = "{}",
+    val operationInput: String = "{}",
+    val operationIdempotencyKey: String = "",
+    val operationMayHaveRun: Boolean = false,
+    val operationReceipt: EngineOperationReceipt? = null,
+    val surfaceLoading: Boolean = false,
+    val surfaceError: String? = null,
     val tenantBranding: Branding? = null,
     val themeMode: String = "system",
     val section: String = "Home",
@@ -101,7 +127,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             app.workspace.networkAvailable = true
-            syncQueuedMutations()
         }
         override fun onLost(network: Network) { app.workspace.markNetworkUnavailable() }
     }
@@ -177,7 +202,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val request = captureRequestScope() ?: return@launch
             app.workspace.bindAnonymousSession(loginScope, activeScope)
             app.activateScope(activeScope)
-            app.workspace.clearDrafts(activeScope)
             app.getSharedPreferences("kora_session", 0).edit().putString("last_user", user.name).putString("last_email", user.email).putString("last_full_name", user.fullName).apply()
             updateRequest(request) { current -> AppState(stage = AppStage.WORKSPACE, serverUrl = current.serverUrl, siteRef = current.siteRef, user = user) }
             loadWorkspace(); observeLocalWork(); if (!_state.value.offline) syncQueuedMutations()
@@ -188,13 +212,90 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectSection(section: String) {
-        _state.update { it.copy(section = section, selectedDoctype = null, selectedRecord = null, editingRecord = null, formOpen = false, formValues = emptyMap()) }
-        when (section) { "Requests" -> loadRequests(); "Work" -> loadWorkspace(); "POS" -> loadPosCatalog(); "Reports" -> loadAnalytics(); "Sync" -> if (!_state.value.offline) syncQueuedMutations(showMessage = true) }
+        _state.update { it.copy(section = section, selectedDoctype = null, selectedRecord = null, editingRecord = null, formOpen = false, formValues = emptyMap(), selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, selectedPublishedRow = null, operationReceipt = null, surfaceError = null) }
+        when (section) { "Requests" -> loadRequests(); "Work" -> loadWorkspace(); "Reports" -> loadAnalytics() }
     }
 
     fun downloadForOffline() = viewModelScope.launch {
         val active = scope ?: return@launch
         if (!_state.value.offlineCoverage.downloading) app.workspace.prepareOffline(active)
+    }
+
+    fun openPublishedQuery(query: EnginePublishedQuery) {
+        _state.update { it.copy(section = "Work", selectedPublishedQuery = query, selectedProjection = null, publishedPage = null, selectedPublishedRow = null, publishedQueryInput = "{}", surfaceError = null) }
+        runPublishedQuery()
+    }
+
+    fun setPublishedQueryInput(value: String) = _state.update { it.copy(publishedQueryInput = value, surfaceError = null) }
+
+    fun runPublishedQuery(cursor: String? = null) = viewModelScope.launch {
+        val active = scope ?: return@launch
+        val current = _state.value
+        val catalog = current.publishedCatalog ?: return@launch
+        val query = current.selectedPublishedQuery ?: return@launch
+        _state.update { it.copy(surfaceLoading = true, surfaceError = null, selectedPublishedRow = null) }
+        try {
+            val input = parseJsonValue(current.publishedQueryInput)
+            val page = app.workspace.publishedQuery(active, catalog, query, input, cursor)
+            _state.update { it.copy(publishedPage = page, surfaceLoading = false) }
+        } catch (error: Exception) {
+            _state.update { it.copy(surfaceLoading = false, surfaceError = error.message ?: "Published query is unavailable") }
+        }
+    }
+
+    fun openPublishedProjection(projection: EnginePublishedProjection) = viewModelScope.launch {
+        val active = scope ?: return@launch
+        val catalog = _state.value.publishedCatalog ?: return@launch
+        _state.update { it.copy(section = "Work", selectedPublishedQuery = null, selectedProjection = projection, publishedPage = null, selectedPublishedRow = null, surfaceLoading = true, surfaceError = null) }
+        try {
+            val page = app.workspace.publishedProjection(active, catalog, projection)
+            _state.update { it.copy(publishedPage = page, surfaceLoading = false) }
+        } catch (error: Exception) {
+            _state.update { it.copy(surfaceLoading = false, surfaceError = error.message ?: "Published projection is unavailable") }
+        }
+    }
+
+    fun openPublishedOperation(operation: EnginePublishedOperation) {
+        _state.update { it.copy(section = "Work", selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = operation, operationInput = "{}", operationIdempotencyKey = java.util.UUID.randomUUID().toString(), operationMayHaveRun = false, operationReceipt = null, surfaceError = null) }
+    }
+
+    fun startNewPublishedOperation() {
+        _state.update { it.copy(operationInput = "{}", operationIdempotencyKey = java.util.UUID.randomUUID().toString(), operationMayHaveRun = false, operationReceipt = null, surfaceError = null) }
+    }
+
+    fun closePublishedSurface() = _state.update { it.copy(selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, selectedPublishedRow = null, operationReceipt = null, surfaceError = null) }
+
+    fun selectPublishedRow(row: JSONObject?) = _state.update { it.copy(selectedPublishedRow = row) }
+
+    fun setOperationInput(value: String) = _state.update { it.copy(operationInput = value, surfaceError = null) }
+
+    fun executePublishedOperation(operation: EnginePublishedOperation) = viewModelScope.launch {
+        val active = scope ?: return@launch
+        val catalog = _state.value.publishedCatalog ?: return@launch
+        _state.update { it.copy(surfaceLoading = true, surfaceError = null, operationReceipt = null) }
+        try {
+            val input = parseJsonValue(_state.value.operationInput)
+            val idempotencyKey = _state.value.operationIdempotencyKey.ifBlank { java.util.UUID.randomUUID().toString() }
+            _state.update { it.copy(operationIdempotencyKey = idempotencyKey, operationMayHaveRun = true) }
+            val receipt = app.workspace.submitPublishedOperation(active, catalog, operation, input, idempotencyKey)
+            _state.update { it.copy(operationReceipt = receipt, surfaceLoading = false, operationMayHaveRun = receipt.status in setOf("accepted", "running", "outcome_unknown"), surfaceError = if (receipt.status in setOf("rejected", "conflict", "failed", "outcome_unknown")) receipt.errorMessage ?: "Operation status: ${receipt.status}" else null) }
+        } catch (error: Exception) {
+            val uncertain = (error as? com.kora.mobile.domain.model.KoraError)?.retryable == true
+            _state.update { it.copy(surfaceLoading = false, operationMayHaveRun = uncertain, surfaceError = if (uncertain) "The response was not received. The action may have run; check its receipt before retrying." else error.message ?: "The action was not accepted") }
+        }
+    }
+
+    fun recoverPublishedOperation() = viewModelScope.launch {
+        val active = scope ?: return@launch
+        val catalog = _state.value.publishedCatalog ?: return@launch
+        val operation = _state.value.selectedPublishedOperation ?: return@launch
+        _state.update { it.copy(surfaceLoading = true, surfaceError = null) }
+        try {
+            val receipt = app.workspace.lookupPublishedOperation(active, catalog, operation, _state.value.operationIdempotencyKey)
+            _state.update { it.copy(operationReceipt = receipt, surfaceLoading = false, operationMayHaveRun = receipt == null || receipt.status in setOf("accepted", "running", "outcome_unknown"), surfaceError = if (receipt == null) "No receipt is recorded for this intent yet. Retry only with the same input and key." else null) }
+        } catch (error: Exception) {
+            _state.update { it.copy(surfaceLoading = false, operationMayHaveRun = true, surfaceError = error.message ?: "Could not check the operation receipt") }
+        }
     }
 
     fun reviewSyncIssue(mutation: LocalMutation) = viewModelScope.launch {
@@ -491,8 +592,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     message = "Sale saved",
                 )
             }
-            observeLocalWork()
-            if (app.workspace.networkAvailable) syncQueuedMutations()
         } catch (error: Exception) {
             updateRequest(scopeRequest) { it.copy(posSaving = false, message = error.message ?: "Could not save sale on this device") }
         }
@@ -816,8 +915,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun restoreUsbServer() = viewModelScope.launch {
-        if (scope?.origin == "http://localhost:8000") syncQueuedMutations(showMessage = true)
-        else changeServer("http://localhost:8000")
+        if (scope?.origin != "http://localhost:8000") changeServer("http://localhost:8000")
     }
 
     private fun restoreCachedSession() = viewModelScope.launch {
@@ -832,8 +930,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         activateRequestScope(restored)
         val request = captureRequestScope() ?: return@launch
         app.activateScope(restored)
-        app.workspace.clearDrafts(restored)
-        app.workspace.restoreCoverage(restored)
         // Restore the locally authenticated workspace immediately. Network validation runs separately.
         val cachedUser = CurrentUser(userId, saved.getString("last_email", "").orEmpty(), saved.getString("last_full_name", "Your workspace").orEmpty())
         updateRequest(request) { it.copy(stage = AppStage.WORKSPACE, user = cachedUser, offline = app.workspace.offline.value) }
@@ -855,17 +951,43 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val request = captureRequestScope() ?: return@launch
         val active = request.scope
         try {
-            val config = parseNavigation(app.workspace.navigation(active))
+            val config = runCatching { parseNavigation(app.workspace.navigation(active)) }.getOrNull()
             val navCached = app.workspace.lastResponseWasCached
+            val catalog = app.workspace.publishedCatalog(active)
+            val catalogCached = app.workspace.lastResponseWasCached
             val brandingResponse = runCatching { app.workspace.branding(active) }.getOrNull()
             val brandingJson = brandingResponse?.optJSONObject("branding") ?: brandingResponse
-            val tenantBranding = brandingJson?.let { parseBranding(it) } ?: config.branding
+            val tenantBranding = brandingJson?.let { parseBranding(it) }
             val savedTheme = app.getSharedPreferences("kora_preferences", 0).getString("theme_mode", null)
             val themeMode = (savedTheme ?: tenantBranding?.defaultMode ?: "system").lowercase()
-            val hasProducts = config.modules.flatMap { it.doctypes }.any { it.name.equals("Product", true) }
+            val hasProducts = config?.modules?.flatMap { it.doctypes }?.any { it.name.equals("Product", true) } == true
             val posManifest = if (hasProducts) runCatching { app.workspace.pageManifest(active, "/pos") }.getOrNull() else null
-            updateRequest(request) { it.copy(navigation = config.copy(branding = tenantBranding), tenantBranding = tenantBranding, themeMode = themeMode, posManifest = posManifest, offline = navCached || app.workspace.lastResponseWasCached, message = null) }
-        } catch (_: Exception) { updateRequest(request) { it.copy(offline = true, message = null) } }
+            updateRequest(request) { it.copy(
+                navigation = config?.copy(branding = tenantBranding),
+                publishedCatalog = catalog,
+                selectedPublishedQuery = null,
+                selectedProjection = null,
+                selectedPublishedOperation = null,
+                publishedPage = null,
+                tenantBranding = tenantBranding,
+                themeMode = themeMode,
+                posManifest = posManifest,
+                offline = catalogCached || navCached || app.workspace.lastResponseWasCached,
+                message = null,
+                surfaceError = null,
+            ) }
+        } catch (error: Exception) {
+            updateRequest(request) { it.copy(
+                publishedCatalog = null,
+                selectedPublishedQuery = null,
+                selectedProjection = null,
+                selectedPublishedOperation = null,
+                publishedPage = null,
+                offline = true,
+                message = null,
+                surfaceError = error.message ?: "Published workspace catalog could not be loaded",
+            ) }
+        }
     }
 
     private fun loadRequests() = viewModelScope.launch {
@@ -894,7 +1016,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
-
     private fun parseUser(raw: JSONObject): CurrentUser {
         val obj = raw.optJSONObject("data") ?: raw
         val roles = obj.optJSONArray("roles") ?: JSONArray()

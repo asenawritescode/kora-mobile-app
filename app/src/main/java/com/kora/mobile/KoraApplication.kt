@@ -2,6 +2,7 @@ package com.kora.mobile
 
 import android.app.Application
 import com.kora.mobile.core.config.InstanceStore
+import com.kora.mobile.core.contracts.EngineContractDecoder
 import com.kora.mobile.core.database.KoraDatabase
 import com.kora.mobile.core.network.KoraHttpClient
 import com.kora.mobile.core.security.SecretVault
@@ -20,7 +21,7 @@ class KoraApplication : Application() {
         super.onCreate()
         instanceStore = InstanceStore(this)
         vault = SecretVault(this)
-        workspace = WorkspaceRepository(KoraHttpClient(vault), KoraDatabase.get(this), vault, ::isActiveScope)
+        workspace = WorkspaceRepository(KoraHttpClient(vault), KoraDatabase.get(this), vault, EngineContractDecoder.fromAssets(this), ::isActiveScope)
     }
 
     fun activateScope(scope: Scope) {
