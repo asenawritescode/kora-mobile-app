@@ -731,10 +731,51 @@ private fun PublishedRowDetail(row: JSONObject) {
 @Composable
 private fun PublishedOperationDetail(state: AppState, vm: AppViewModel) {
     val operation = state.selectedPublishedOperation ?: return
+    val inputSchema = state.publishedCatalog?.schemas?.singleOrNull { it.ref == operation.inputSchema }?.schema
+    val properties = inputSchema?.optJSONObject("properties")
+    val required = inputSchema?.optJSONArray("required")?.let { array -> (0 until array.length()).map { array.optString(it) }.toSet() }.orEmpty()
+    var formValues by remember(operation.operationRef) { mutableStateOf(emptyMap<String, String>()) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(operation.presentation.optString("description").ifBlank { "Engine validates this action against its published input schema and current permissions." }, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Input schema ${operation.inputSchema.id} v${operation.inputSchema.version}", style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
-        OutlinedTextField(value = state.operationInput, onValueChange = vm::setOperationInput, enabled = !state.operationMayHaveRun, label = { Text("Action input JSON") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
+        if (properties != null && properties.length() > 0) {
+            val names = properties.keys().asSequence().toList()
+            names.forEach { name ->
+                val definition = properties.optJSONObject(name) ?: JSONObject()
+                val label = definition.optString("title").ifBlank { name.replace('_', ' ').replaceFirstChar { it.uppercase() } } + if (name in required) " *" else ""
+                val value = formValues[name].orEmpty()
+                val enumValues = definition.optJSONArray("enum")?.let { values -> (0 until values.length()).map { values.optString(it) } }.orEmpty()
+                when {
+                    enumValues.isNotEmpty() -> ChoiceField(label, value, "Choose ${label.removeSuffix(" *").lowercase()}", enumValues, true, !state.operationMayHaveRun) { selected ->
+                        formValues = formValues + (name to selected)
+                        vm.setOperationInput(operationFormJson(formValues + (name to selected), properties))
+                    }
+                    definition.optString("type") == "boolean" -> Row(Modifier.fillMaxWidth().clickable(enabled = !state.operationMayHaveRun) {
+                        val selected = if (value == "true") "false" else "true"
+                        formValues = formValues + (name to selected)
+                        vm.setOperationInput(operationFormJson(formValues + (name to selected), properties))
+                    }, verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(value == "true", null, enabled = !state.operationMayHaveRun)
+                        Text(label)
+                    }
+                    else -> KoraTextField(
+                        value = value,
+                        onValueChange = { typed ->
+                            formValues = formValues + (name to typed)
+                            vm.setOperationInput(operationFormJson(formValues + (name to typed), properties))
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !state.operationMayHaveRun,
+                        label = label,
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = if (definition.optString("type") in setOf("number", "integer")) KeyboardType.Decimal else KeyboardType.Text),
+                    )
+                }
+                definition.optString("description").takeIf(String::isNotBlank)?.let { Text(it, fontSize = 11.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+        } else {
+            OutlinedTextField(value = state.operationInput, onValueChange = vm::setOperationInput, enabled = !state.operationMayHaveRun, label = { Text("Action input JSON") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
+        }
         Button(onClick = { vm.executePublishedOperation(operation) }, enabled = operation.availability == "available" && !state.surfaceLoading, modifier = Modifier.fillMaxWidth()) { Text(if (state.surfaceLoading) "Submitting…" else if (operation.offlineEligible) "Submit or save offline" else "Submit action") }
         if (state.operationMayHaveRun) OutlinedButton(onClick = vm::recoverPublishedOperation, enabled = !state.surfaceLoading, modifier = Modifier.fillMaxWidth()) { Text("Check operation receipt") }
         state.surfaceError?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
@@ -748,6 +789,22 @@ private fun PublishedOperationDetail(state: AppState, vm: AppViewModel) {
         }
         if (state.operationReceipt != null && !state.operationMayHaveRun) OutlinedButton(onClick = vm::startNewPublishedOperation, modifier = Modifier.fillMaxWidth()) { Text("Start another action") }
     }
+}
+
+private fun operationFormJson(values: Map<String, String>, properties: JSONObject): String {
+    val payload = JSONObject()
+    values.forEach { (name, raw) ->
+        if (raw.isBlank()) return@forEach
+        val type = properties.optJSONObject(name)?.optString("type")
+        val value: Any = when (type) {
+            "boolean" -> raw == "true"
+            "integer" -> raw.toLongOrNull() ?: raw
+            "number" -> raw.toDoubleOrNull() ?: raw
+            else -> raw
+        }
+        payload.put(name, value)
+    }
+    return payload.toString()
 }
 
 @Composable
