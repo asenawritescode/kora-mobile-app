@@ -314,7 +314,10 @@ private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
             } else {
                 TopAppBar(
                     title = { Column { Text(if (state.section in setOf("Reports", "Requests", "Sync")) state.section else "Kora", fontWeight = FontWeight.Bold); Text(state.navigation?.branding?.appName ?: "Workspace", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) } },
-                    actions = { IconButton(onClick = { vm.selectSection("Sync") }) { if (state.offline) Icon(Icons.Filled.CloudOff, "Offline. Open sync", tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) else Icon(Icons.Outlined.CloudDone, "Connected. Open sync", tint = androidx.compose.material3.MaterialTheme.colorScheme.primary) } },
+                    actions = {
+                        ScopePicker(state, vm)
+                        IconButton(onClick = { vm.selectSection("Sync") }) { if (state.offline) Icon(Icons.Filled.CloudOff, "Offline. Open sync", tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) else Icon(Icons.Outlined.CloudDone, "Connected. Open sync", tint = androidx.compose.material3.MaterialTheme.colorScheme.primary) }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.background),
                 )
             }
@@ -344,6 +347,28 @@ private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
                 state.section == "Requests" -> RequestsScreen(state, vm)
                 state.section == "Reports" -> ReportsScreen(state, vm)
                 else -> SyncScreen(state, vm)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScopePicker(state: AppState, vm: AppViewModel) {
+    val catalog = state.publishedCatalog ?: return
+    if (state.availableEntityChoices.isEmpty()) return
+    var expanded by remember { mutableStateOf(false) }
+    val current = catalog.businessScope
+    Box {
+        TextButton(onClick = { expanded = true }, modifier = Modifier.semantics { contentDescription = "Scope selector" }) {
+            Text(if (current.kind == "legal_entity") current.legalEntityId ?: "Legal entity" else "Tenant", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Icon(Icons.Filled.ArrowDropDown, null)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            state.availableEntityChoices.forEach { choice ->
+                DropdownMenuItem(
+                    text = { Text("Legal entity ${choice.legalEntityId}") },
+                    onClick = { expanded = false; vm.switchBusinessScope(choice) },
+                )
             }
         }
     }

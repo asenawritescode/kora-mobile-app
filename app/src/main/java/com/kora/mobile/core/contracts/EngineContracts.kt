@@ -69,6 +69,7 @@ data class EngineApplicationCatalog(
     val operations: List<EnginePublishedOperation>,
     val schemas: List<EngineSchemaDocument>,
     val allowedEntityChoices: List<BusinessScope>,
+    val availableScopes: List<BusinessScope>,
     val blockers: List<EngineCatalogBlocker>,
 )
 data class EngineWorkflowInstance(
@@ -139,6 +140,7 @@ fun EngineContractDecoder.decodeApplicationCatalog(json: String): EngineApplicat
     val schemaDocuments = array("schemas") { item -> EngineSchemaDocument(item.requiredObject("ref").asSchemaRef(), item.requiredObject("schema")) }
     val blockers = array("blockers") { item -> EngineCatalogBlocker(item.requiredString("code"), item.requiredInt("count")) }
     val entityChoices = value.optJSONArray("allowed_entity_choices") ?: throw IllegalArgumentException("allowed_entity_choices must be an array")
+    val availableScopes = value.optJSONArray("available_scopes") ?: JSONArray()
     val queryList = (0 until queries.length()).map { index ->
         val item = queries.getJSONObject(index)
         EnginePublishedQuery(item.requiredString("owner_module_id"), item.requiredString("name"), item.requiredString("route"), item.requiredObject("input_schema").asSchemaRef(), item.requiredObject("output_schema").asSchemaRef(), item.requiredString("scope_policy"), item.requiredInt("page_limit"), item.optBoolean("offline_eligible"), item.strings("allowed_fields"), item.requiredObject("presentation"), item.optString("offline_fact_key").takeIf(String::isNotBlank))
@@ -152,7 +154,8 @@ fun EngineContractDecoder.decodeApplicationCatalog(json: String): EngineApplicat
         EnginePublishedOperation(item.requiredString("operation_ref"), item.requiredString("owner_module_id"), item.requiredObject("input_schema").asSchemaRef(), item.requiredObject("output_schema").asSchemaRef(), item.requiredString("availability"), item.optBoolean("offline_eligible"), item.optJSONObject("presentation") ?: JSONObject())
     }
     return EngineApplicationCatalog(value.getLong("revision"), value.requiredBusinessScope("business_scope"), modules, queryList, projectionList, operationList, schemaDocuments,
-        (0 until entityChoices.length()).map { entityChoices.getJSONObject(it).toBusinessScope() }, blockers)
+        (0 until entityChoices.length()).map { entityChoices.getJSONObject(it).toBusinessScope() },
+        (0 until availableScopes.length()).map { availableScopes.getJSONObject(it).toBusinessScope() }, blockers)
 }
 
 fun EngineContractDecoder.decodeWorkflowInstance(json: String): EngineWorkflowInstance {

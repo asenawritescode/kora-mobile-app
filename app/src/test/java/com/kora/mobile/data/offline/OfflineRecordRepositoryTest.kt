@@ -453,5 +453,5 @@ class OfflineRecordRepositoryTest {
             .put("schemas", org.json.JSONArray().put(JSONObject().put("ref", JSONObject().put("id", "orders.input").put("version", 1))
                 .put("schema", JSONObject().put("type", "object").put("required", org.json.JSONArray().put("amount")).put("properties", JSONObject().put("amount", JSONObject().put("type", "integer")))))
                 .put(JSONObject().put("ref", JSONObject().put("id", "orders.output").put("version", 1)).put("schema", JSONObject().put("type", "object"))))
-            .put("allowed_entity_choices", org.json.JSONArray()).put("blockers", org.json.JSONArray()).toString())
+            .put("allowed_entity_choices", org.json.JSONArray()).put("available_scopes", org.json.JSONArray()).put("blockers", org.json.JSONArray()).toString())
 }

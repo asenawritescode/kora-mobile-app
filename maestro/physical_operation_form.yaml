@@ -1,0 +1,10 @@
+appId: com.kora.mobile
+---
+- launchApp
+- tapOn: "Browse"
+- extendedWaitUntil:
+    visible: "finance.ar~billing.invoice~issue"
+    timeout: 30000
+- tapOn: "finance.ar~billing.invoice~issue"
+- assertVisible: "Action input JSON"
+- assertVisible: "Submit or save offline"

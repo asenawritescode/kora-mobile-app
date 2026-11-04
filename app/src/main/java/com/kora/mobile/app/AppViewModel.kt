@@ -30,6 +30,7 @@ import com.kora.mobile.domain.model.FieldConstraint
 import com.kora.mobile.domain.model.ModuleGroup
 import com.kora.mobile.domain.model.NavigationConfig
 import com.kora.mobile.domain.model.Scope
+import com.kora.mobile.domain.model.BusinessScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,6 +63,7 @@ data class AppState(
     val user: CurrentUser? = null,
     val navigation: NavigationConfig? = null,
     val publishedCatalog: EngineApplicationCatalog? = null,
+    val availableEntityChoices: List<BusinessScope> = emptyList(),
     val selectedPublishedQuery: EnginePublishedQuery? = null,
     val selectedProjection: EnginePublishedProjection? = null,
     val selectedPublishedOperation: EnginePublishedOperation? = null,
@@ -212,6 +214,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun selectSection(section: String) {
         _state.update { it.copy(section = section, selectedDoctype = null, selectedRecord = null, editingRecord = null, formOpen = false, formValues = emptyMap(), selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, selectedPublishedRow = null, operationReceipt = null, surfaceError = null) }
         when (section) { "Requests" -> { loadRequests(); loadWorkflowInstances() }; "Work" -> loadWorkspace(); "Reports" -> loadAnalytics() }
+    }
+
+    fun switchBusinessScope(target: BusinessScope) {
+        val current = scope ?: return
+        if (current.businessScope == target) return
+        val next = current.copy(businessScope = target)
+        scope = next
+        app.activateScope(next)
+        observeOfflineIntents(next)
+        _state.update {
+            it.copy(
+                publishedCatalog = null,
+                selectedPublishedQuery = null,
+                selectedProjection = null,
+                selectedPublishedOperation = null,
+                publishedPage = null,
+                surfaceError = null,
+                message = null,
+            )
+        }
+        loadWorkspace()
     }
 
     fun openPublishedQuery(query: EnginePublishedQuery) {
@@ -897,7 +920,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val tenantBranding = brandingJson?.let { parseBranding(it) }
             val savedTheme = app.getSharedPreferences("kora_preferences", 0).getString("theme_mode", null)
             val themeMode = (savedTheme ?: tenantBranding?.defaultMode ?: "system").lowercase()
-            _state.update { it.copy(navigation = null, publishedCatalog = catalog, selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, tenantBranding = tenantBranding, themeMode = themeMode, posManifest = null, offline = catalogCached || app.workspace.lastResponseWasCached, message = null, surfaceError = null) }
+            val entityChoices = (catalog.allowedEntityChoices + catalog.availableScopes.filter { it.kind == "legal_entity" }).distinct()
+            _state.update { it.copy(navigation = null, publishedCatalog = catalog, availableEntityChoices = if (entityChoices.isNotEmpty()) entityChoices else it.availableEntityChoices, selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, tenantBranding = tenantBranding, themeMode = themeMode, posManifest = null, offline = catalogCached || app.workspace.lastResponseWasCached, message = null, surfaceError = null) }
             if (app.workspace.hasPendingPublishedIntents(active)) enqueueIntentSync(active)
         } catch (error: Exception) { _state.update { it.copy(publishedCatalog = null, selectedPublishedQuery = null, selectedProjection = null, selectedPublishedOperation = null, publishedPage = null, offline = true, message = null, surfaceError = error.message ?: "Published workspace catalog could not be loaded") } }
     }

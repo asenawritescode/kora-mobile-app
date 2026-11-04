@@ -1,0 +1,20 @@
+appId: com.kora.mobile
+---
+- launchApp
+- tapOn:
+    text: "Kora"
+    optional: true
+- tapOn:
+    text: "Just once"
+    optional: true
+- assertVisible: "Good to see you,"
+- tapOn: "Browse"
+- extendedWaitUntil:
+    visible: "Published workspace"
+    timeout: 30000
+- assertVisible: "Scope selector"
+- tapOn: "Scope selector"
+- assertVisible: "Legal entity LE-0001"
+- tapOn: "Legal entity LE-0001"
+- assertVisible: "finance.ar"
+- assertVisible: "sales.orders"
