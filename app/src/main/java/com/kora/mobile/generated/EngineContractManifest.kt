@@ -3,8 +3,8 @@ package com.kora.mobile.generated
 
 object EngineContractManifest {
     const val schemaVersion = 2
-    const val sourceRevision = "f335c52db317d643ed9d1855096606f01a3714a9"
+    const val sourceRevision = "f22618f78ece6adec29bb18f765ca7b9e16f0fa1"
     const val sourceTree = "clean"
     const val artifact = "app/src/main/assets/contracts/engine-v2.json"
-    const val schemaSHA256 = "75763fe1da273c5e04f0f72cf4d743eb568c9bca5177ae74a868c602710ca693"
+    const val schemaSHA256 = "8bb1dc611263213392114ee59e2e343d9ea9bd917953b7b544691b0a2c09c433"
 }

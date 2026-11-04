@@ -135,6 +135,10 @@
         "capability": {
           "type": "string"
         },
+        "checkout": {
+          "$ref": "#/$defs/CheckoutOperationContract",
+          "x-optional-pointer": true
+        },
         "input_schema": {
           "$ref": "#/$defs/SchemaRef"
         },
@@ -224,6 +228,9 @@
           },
           "type": "array"
         },
+        "capability": {
+          "type": "string"
+        },
         "input_schema": {
           "$ref": "#/$defs/SchemaRef"
         },
@@ -232,6 +239,9 @@
         },
         "offline_eligible": {
           "type": "boolean"
+        },
+        "offline_fact_key": {
+          "type": "string"
         },
         "output_schema": {
           "$ref": "#/$defs/SchemaRef"
@@ -244,6 +254,10 @@
         },
         "presentation": {
           "$ref": "#/$defs/SurfacePresentation"
+        },
+        "reference_lookup": {
+          "$ref": "#/$defs/PublishedReferenceLookup",
+          "x-optional-pointer": true
         },
         "route": {
           "type": "string"
@@ -258,6 +272,7 @@
       },
       "required": [
         "allowed_fields",
+        "capability",
         "input_schema",
         "name",
         "output_schema",
@@ -490,6 +505,52 @@
       ],
       "type": "object"
     },
+    "BusinessEffect": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "currency": {
+          "maxLength": 16,
+          "minLength": 1,
+          "type": "string"
+        },
+        "entity_id": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "lifecycle": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "target_ref": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency",
+        "entity_id",
+        "key",
+        "occurred_at",
+        "target_ref"
+      ],
+      "type": "object"
+    },
     "BusinessEventDefinition": {
       "additionalProperties": false,
       "properties": {
@@ -507,6 +568,206 @@
         "owner_module_id",
         "payload_schema",
         "type"
+      ],
+      "type": "object"
+    },
+    "BusinessFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "actual": {
+          "items": {
+            "$ref": "#/$defs/BusinessEffect"
+          },
+          "type": "array"
+        },
+        "evidence": {
+          "type": "string",
+          "x-max-utf8-bytes": 8192
+        },
+        "expected": {
+          "$ref": "#/$defs/BusinessObligation"
+        },
+        "id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "missing_effect",
+            "duplicate_effect",
+            "amount_mismatch",
+            "scope_mismatch",
+            "unknown_outcome",
+            "pending_grace",
+            "lifecycle_mismatch"
+          ],
+          "type": "string"
+        },
+        "source_ref": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "open",
+            "investigating",
+            "resolved",
+            "waived"
+          ],
+          "type": "string"
+        },
+        "target_refs": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        }
+      },
+      "required": [
+        "expected",
+        "id",
+        "key",
+        "kind",
+        "source_ref",
+        "state"
+      ],
+      "type": "object"
+    },
+    "BusinessFindingActionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "waived",
+            "repaired"
+          ],
+          "type": "string"
+        },
+        "finding_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "finding_id"
+      ],
+      "type": "object"
+    },
+    "BusinessFindingDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "finding_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "x-max-utf8-bytes": 8192
+        }
+      },
+      "required": [
+        "finding_id"
+      ],
+      "type": "object"
+    },
+    "BusinessObligation": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "currency": {
+          "maxLength": 16,
+          "minLength": 1,
+          "type": "string"
+        },
+        "entity_id": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "lifecycle": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "source_ref": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency",
+        "entity_id",
+        "key",
+        "occurred_at",
+        "source_ref"
+      ],
+      "type": "object"
+    },
+    "BusinessReconciliationRunRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "owner_module_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "previous_run_id": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "rule_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner_module_id",
+        "rule_id",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "BusinessReconciliationSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/BusinessScope"
+        },
+        "unresolved_business_findings": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scope",
+        "unresolved_business_findings"
       ],
       "type": "object"
     },
@@ -534,6 +795,128 @@
       ],
       "type": "object"
     },
+    "BusinessRun": {
+      "additionalProperties": false,
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "cursors": {
+          "$ref": "#/$defs/BusinessRunCursor"
+        },
+        "cutoff": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/BusinessFinding"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "owner_module_id": {
+          "type": "string"
+        },
+        "rule_id": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/BusinessScope"
+        },
+        "tenant_id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "watermarks": {
+          "$ref": "#/$defs/BusinessRunWatermarks"
+        }
+      },
+      "required": [
+        "complete",
+        "created_at",
+        "cutoff",
+        "id",
+        "owner_module_id",
+        "rule_id",
+        "scope",
+        "tenant_id",
+        "version"
+      ],
+      "type": "object"
+    },
+    "BusinessRunCursor": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "maxLength": 1024,
+          "type": "string"
+        },
+        "source_complete": {
+          "type": "boolean"
+        },
+        "source_rows": {
+          "items": {
+            "$ref": "#/$defs/BusinessObligation"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        },
+        "target": {
+          "maxLength": 1024,
+          "type": "string"
+        },
+        "target_complete": {
+          "type": "boolean"
+        },
+        "target_rows": {
+          "items": {
+            "$ref": "#/$defs/BusinessEffect"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        },
+        "watermarks": {
+          "$ref": "#/$defs/BusinessRunWatermarks"
+        }
+      },
+      "type": "object"
+    },
+    "BusinessRunWatermarks": {
+      "additionalProperties": false,
+      "properties": {
+        "source_as_of": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "source_revision": {
+          "type": "string"
+        },
+        "source_snapshot": {
+          "type": "string"
+        },
+        "target_as_of": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "target_revision": {
+          "type": "string"
+        },
+        "target_snapshot": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "BusinessScope": {
       "additionalProperties": false,
       "oneOf": [
@@ -548,6 +931,11 @@
           "properties": {
             "kind": {
               "const": "tenant"
+            },
+            "tenant_id": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
             }
           },
           "required": [
@@ -560,6 +948,16 @@
           "properties": {
             "kind": {
               "const": "legal_entity"
+            },
+            "legal_entity_id": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "tenant_id": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
             }
           },
           "required": [
@@ -783,6 +1181,93 @@
       ],
       "type": "object"
     },
+    "CheckoutInputBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "cart_items": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "customer_phone": {
+          "type": "string"
+        },
+        "customer_ref": {
+          "type": "string"
+        },
+        "payment_method": {
+          "type": "string"
+        },
+        "register_ref": {
+          "type": "string"
+        },
+        "requested_total": {
+          "type": "string"
+        },
+        "shift_ref": {
+          "type": "string"
+        },
+        "till_session_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cart_items",
+        "currency",
+        "payment_method",
+        "requested_total"
+      ],
+      "type": "object"
+    },
+    "CheckoutOperationContract": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/CheckoutInputBinding"
+        },
+        "outcomes": {
+          "items": {
+            "$ref": "#/$defs/CheckoutOutcomeBinding"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "input",
+        "outcomes"
+      ],
+      "type": "object"
+    },
+    "CheckoutOutcomeBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "payment_initiated",
+            "payment_settled",
+            "invoice_issued",
+            "fulfillment_completed"
+          ],
+          "type": "string"
+        },
+        "reference_field": {
+          "type": "string"
+        },
+        "status_field": {
+          "type": "string"
+        },
+        "success_value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "status_field",
+        "success_value"
+      ],
+      "type": "object"
+    },
     "CommandMeta": {
       "additionalProperties": false,
       "properties": {
@@ -912,6 +1397,13 @@
         "proposal_id": {
           "type": "string"
         },
+        "published_bindings": {
+          "items": {
+            "$ref": "#/$defs/ConfigurationSurfaceBinding"
+          },
+          "maxItems": 512,
+          "type": "array"
+        },
         "roles": {
           "items": {
             "x-open-json-value": true
@@ -966,10 +1458,23 @@
           },
           "type": "array"
         },
+        "module_blockers": {
+          "items": {
+            "$ref": "#/$defs/ModuleBlocker"
+          },
+          "type": "array"
+        },
         "ordered_doctypes": {
           "items": {
             "type": "string"
           },
+          "type": "array"
+        },
+        "published_bindings": {
+          "items": {
+            "$ref": "#/$defs/ConfigurationSurfaceBinding"
+          },
+          "maxItems": 512,
           "type": "array"
         },
         "valid": {
@@ -1071,6 +1576,13 @@
         },
         "proposal_id": {
           "type": "string"
+        },
+        "published_bindings": {
+          "items": {
+            "$ref": "#/$defs/ConfigurationSurfaceBinding"
+          },
+          "maxItems": 512,
+          "type": "array"
         },
         "roles": {
           "items": {
@@ -1208,6 +1720,221 @@
         "status",
         "version",
         "version_id"
+      ],
+      "type": "object"
+    },
+    "ConfigurationSurfaceBinding": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "anyOf": [
+              {
+                "properties": null,
+                "required": [
+                  "operation_ref"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "catalog_revision": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "input_schema": {
+              "$ref": "#/$defs/SchemaRef",
+              "x-optional-pointer": true
+            },
+            "kind": {
+              "const": "query",
+              "type": "string"
+            },
+            "name": {
+              "maxLength": 160,
+              "type": "string"
+            },
+            "output_schema": {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            "owner_module_id": {
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "catalog_revision",
+            "business_scope",
+            "owner_module_id",
+            "name",
+            "input_schema",
+            "output_schema"
+          ],
+          "type": "object"
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "properties": null,
+                "required": [
+                  "operation_ref"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": null,
+                "required": [
+                  "input_schema"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "catalog_revision": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "projection",
+              "type": "string"
+            },
+            "name": {
+              "maxLength": 160,
+              "type": "string"
+            },
+            "output_schema": {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            "owner_module_id": {
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "catalog_revision",
+            "business_scope",
+            "owner_module_id",
+            "name",
+            "output_schema"
+          ],
+          "type": "object"
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "properties": null,
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "catalog_revision": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "input_schema": {
+              "$ref": "#/$defs/SchemaRef",
+              "x-optional-pointer": true
+            },
+            "kind": {
+              "const": "operation",
+              "type": "string"
+            },
+            "operation_ref": {
+              "maxLength": 386,
+              "pattern": "^[a-z][a-z0-9_.-]{0,127}~[a-z][a-z0-9_.-]{0,127}~[a-z][a-z0-9_.-]{0,127}$",
+              "type": "string"
+            },
+            "output_schema": {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            "owner_module_id": {
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "catalog_revision",
+            "business_scope",
+            "owner_module_id",
+            "operation_ref",
+            "input_schema",
+            "output_schema"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "business_scope": {
+          "$ref": "#/$defs/BusinessScope"
+        },
+        "catalog_revision": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "input_schema": {
+          "$ref": "#/$defs/SchemaRef",
+          "x-optional-pointer": true
+        },
+        "kind": {
+          "enum": [
+            "query",
+            "projection",
+            "operation"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "operation_ref": {
+          "maxLength": 386,
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}~[a-z][a-z0-9_.-]{0,127}~[a-z][a-z0-9_.-]{0,127}$",
+          "type": "string"
+        },
+        "output_schema": {
+          "$ref": "#/$defs/SchemaRef"
+        },
+        "owner_module_id": {
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+          "type": "string"
+        },
+        "view_name": {
+          "maxLength": 160,
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_scope",
+        "catalog_revision",
+        "kind",
+        "output_schema",
+        "owner_module_id",
+        "view_name"
       ],
       "type": "object"
     },
@@ -2478,6 +3205,18 @@
         "max_page_size": {
           "type": "integer"
         },
+        "offline_operations": {
+          "items": {
+            "$ref": "#/$defs/ApplicationCatalogOperation"
+          },
+          "type": "array"
+        },
+        "offline_queries": {
+          "items": {
+            "$ref": "#/$defs/ApplicationCatalogQuery"
+          },
+          "type": "array"
+        },
         "protocol_version": {
           "type": "integer"
         },
@@ -2489,6 +3228,8 @@
         "catalog_revision",
         "max_batch_size",
         "max_page_size",
+        "offline_operations",
+        "offline_queries",
         "protocol_version",
         "snapshot_lifetime_seconds"
       ],
@@ -2711,6 +3452,9 @@
         "complete": {
           "type": "boolean"
         },
+        "fact_key_field": {
+          "type": "string"
+        },
         "input_hash": {
           "type": "string"
         },
@@ -2743,6 +3487,7 @@
         "business_scope",
         "catalog_revision",
         "complete",
+        "fact_key_field",
         "input_hash",
         "replay_position",
         "rows",
@@ -2783,19 +3528,49 @@
       "oneOf": [
         {
           "not": {
-            "properties": null,
-            "required": [
-              "error"
-            ],
-            "type": "object"
+            "anyOf": [
+              {
+                "properties": null,
+                "required": [
+                  "error"
+                ],
+                "type": "object"
+              }
+            ]
           },
           "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "execution_id": {
+              "type": "string"
+            },
+            "operation_ref": {
+              "type": "string"
+            },
+            "output": {
+              "x-max-json-bytes": 1048576,
+              "x-open-json-value": true
+            },
+            "output_schema": {
+              "$ref": "#/$defs/SchemaRef",
+              "x-optional-pointer": true
+            },
+            "revision": {
+              "maxLength": 20,
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "type": "string"
+            },
             "status": {
               "const": "completed",
               "type": "string"
             }
           },
           "required": [
+            "business_scope",
+            "execution_id",
+            "operation_ref",
+            "revision",
             "status",
             "output",
             "output_schema"
@@ -2829,6 +3604,20 @@
             ]
           },
           "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "execution_id": {
+              "type": "string"
+            },
+            "operation_ref": {
+              "type": "string"
+            },
+            "revision": {
+              "maxLength": 20,
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "type": "string"
+            },
             "status": {
               "enum": [
                 "accepted",
@@ -2838,6 +3627,10 @@
             }
           },
           "required": [
+            "business_scope",
+            "execution_id",
+            "operation_ref",
+            "revision",
             "status"
           ],
           "type": "object"
@@ -2862,6 +3655,24 @@
             ]
           },
           "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "error": {
+              "$ref": "#/$defs/Error",
+              "x-optional-pointer": true
+            },
+            "execution_id": {
+              "type": "string"
+            },
+            "operation_ref": {
+              "type": "string"
+            },
+            "revision": {
+              "maxLength": 20,
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "type": "string"
+            },
             "status": {
               "enum": [
                 "rejected",
@@ -2873,6 +3684,10 @@
             }
           },
           "required": [
+            "business_scope",
+            "execution_id",
+            "operation_ref",
+            "revision",
             "status",
             "error"
           ],
@@ -3504,6 +4319,10 @@
         "capability": {
           "type": "string"
         },
+        "checkout": {
+          "$ref": "#/$defs/CheckoutOperationContract",
+          "x-optional-pointer": true
+        },
         "name": {
           "type": "string"
         },
@@ -3555,6 +4374,9 @@
         "offline_eligible": {
           "type": "boolean"
         },
+        "offline_fact_key": {
+          "type": "string"
+        },
         "operation": {
           "type": "string"
         },
@@ -3572,6 +4394,10 @@
         },
         "presentation": {
           "$ref": "#/$defs/SurfacePresentation"
+        },
+        "reference_lookup": {
+          "$ref": "#/$defs/PublishedReferenceLookup",
+          "x-optional-pointer": true
         },
         "scope_policy": {
           "enum": [
@@ -3613,6 +4439,30 @@
       },
       "required": [
         "input"
+      ],
+      "type": "object"
+    },
+    "PublishedReferenceLookup": {
+      "additionalProperties": false,
+      "properties": {
+        "label_field": {
+          "type": "string"
+        },
+        "resource_type": {
+          "type": "string"
+        },
+        "search_field": {
+          "type": "string"
+        },
+        "value_field": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label_field",
+        "resource_type",
+        "search_field",
+        "value_field"
       ],
       "type": "object"
     },
@@ -5006,6 +5856,43 @@
       ],
       "type": "object"
     },
+    "WorkflowHistoryEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "detail": {
+          "type": "string",
+          "x-max-utf8-bytes": 8192
+        },
+        "kind": {
+          "maxLength": 80,
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "status": {
+          "maxLength": 80,
+          "type": "string"
+        },
+        "step_id": {
+          "maxLength": 160,
+          "type": "string"
+        }
+      },
+      "required": [
+        "created_at",
+        "kind",
+        "sequence",
+        "status",
+        "step_id"
+      ],
+      "type": "object"
+    },
     "WorkflowInstance": {
       "additionalProperties": false,
       "properties": {
@@ -5213,6 +6100,10 @@
         "capability": {
           "type": "string"
         },
+        "checkout": {
+          "$ref": "#/$defs/CheckoutOperationContract",
+          "x-optional-pointer": true
+        },
         "input_schema": {
           "$ref": "#/$defs/SchemaRef"
         },
@@ -5302,6 +6193,9 @@
           },
           "type": "array"
         },
+        "capability": {
+          "type": "string"
+        },
         "input_schema": {
           "$ref": "#/$defs/SchemaRef"
         },
@@ -5310,6 +6204,9 @@
         },
         "offline_eligible": {
           "type": "boolean"
+        },
+        "offline_fact_key": {
+          "type": "string"
         },
         "output_schema": {
           "$ref": "#/$defs/SchemaRef"
@@ -5322,6 +6219,10 @@
         },
         "presentation": {
           "$ref": "#/$defs/SurfacePresentation"
+        },
+        "reference_lookup": {
+          "$ref": "#/$defs/PublishedReferenceLookup",
+          "x-optional-pointer": true
         },
         "route": {
           "type": "string"
@@ -5336,6 +6237,7 @@
       },
       "required": [
         "allowed_fields",
+        "capability",
         "input_schema",
         "name",
         "output_schema",
@@ -5568,6 +6470,52 @@
       ],
       "type": "object"
     },
+    "BusinessEffect": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "currency": {
+          "maxLength": 16,
+          "minLength": 1,
+          "type": "string"
+        },
+        "entity_id": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "lifecycle": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "target_ref": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency",
+        "entity_id",
+        "key",
+        "occurred_at",
+        "target_ref"
+      ],
+      "type": "object"
+    },
     "BusinessEventDefinition": {
       "additionalProperties": false,
       "properties": {
@@ -5585,6 +6533,206 @@
         "owner_module_id",
         "payload_schema",
         "type"
+      ],
+      "type": "object"
+    },
+    "BusinessFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "actual": {
+          "items": {
+            "$ref": "#/$defs/BusinessEffect"
+          },
+          "type": "array"
+        },
+        "evidence": {
+          "type": "string",
+          "x-max-utf8-bytes": 8192
+        },
+        "expected": {
+          "$ref": "#/$defs/BusinessObligation"
+        },
+        "id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "missing_effect",
+            "duplicate_effect",
+            "amount_mismatch",
+            "scope_mismatch",
+            "unknown_outcome",
+            "pending_grace",
+            "lifecycle_mismatch"
+          ],
+          "type": "string"
+        },
+        "source_ref": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "open",
+            "investigating",
+            "resolved",
+            "waived"
+          ],
+          "type": "string"
+        },
+        "target_refs": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        }
+      },
+      "required": [
+        "expected",
+        "id",
+        "key",
+        "kind",
+        "source_ref",
+        "state"
+      ],
+      "type": "object"
+    },
+    "BusinessFindingActionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "waived",
+            "repaired"
+          ],
+          "type": "string"
+        },
+        "finding_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "finding_id"
+      ],
+      "type": "object"
+    },
+    "BusinessFindingDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "finding_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "x-max-utf8-bytes": 8192
+        }
+      },
+      "required": [
+        "finding_id"
+      ],
+      "type": "object"
+    },
+    "BusinessObligation": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "currency": {
+          "maxLength": 16,
+          "minLength": 1,
+          "type": "string"
+        },
+        "entity_id": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "lifecycle": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "source_ref": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency",
+        "entity_id",
+        "key",
+        "occurred_at",
+        "source_ref"
+      ],
+      "type": "object"
+    },
+    "BusinessReconciliationRunRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "owner_module_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "previous_run_id": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "rule_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner_module_id",
+        "rule_id",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "BusinessReconciliationSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/BusinessScope"
+        },
+        "unresolved_business_findings": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scope",
+        "unresolved_business_findings"
       ],
       "type": "object"
     },
@@ -5612,6 +6760,128 @@
       ],
       "type": "object"
     },
+    "BusinessRun": {
+      "additionalProperties": false,
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "cursors": {
+          "$ref": "#/$defs/BusinessRunCursor"
+        },
+        "cutoff": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/BusinessFinding"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "owner_module_id": {
+          "type": "string"
+        },
+        "rule_id": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/BusinessScope"
+        },
+        "tenant_id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "watermarks": {
+          "$ref": "#/$defs/BusinessRunWatermarks"
+        }
+      },
+      "required": [
+        "complete",
+        "created_at",
+        "cutoff",
+        "id",
+        "owner_module_id",
+        "rule_id",
+        "scope",
+        "tenant_id",
+        "version"
+      ],
+      "type": "object"
+    },
+    "BusinessRunCursor": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "maxLength": 1024,
+          "type": "string"
+        },
+        "source_complete": {
+          "type": "boolean"
+        },
+        "source_rows": {
+          "items": {
+            "$ref": "#/$defs/BusinessObligation"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        },
+        "target": {
+          "maxLength": 1024,
+          "type": "string"
+        },
+        "target_complete": {
+          "type": "boolean"
+        },
+        "target_rows": {
+          "items": {
+            "$ref": "#/$defs/BusinessEffect"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        },
+        "watermarks": {
+          "$ref": "#/$defs/BusinessRunWatermarks"
+        }
+      },
+      "type": "object"
+    },
+    "BusinessRunWatermarks": {
+      "additionalProperties": false,
+      "properties": {
+        "source_as_of": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "source_revision": {
+          "type": "string"
+        },
+        "source_snapshot": {
+          "type": "string"
+        },
+        "target_as_of": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "target_revision": {
+          "type": "string"
+        },
+        "target_snapshot": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "BusinessScope": {
       "additionalProperties": false,
       "oneOf": [
@@ -5626,6 +6896,11 @@
           "properties": {
             "kind": {
               "const": "tenant"
+            },
+            "tenant_id": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
             }
           },
           "required": [
@@ -5638,6 +6913,16 @@
           "properties": {
             "kind": {
               "const": "legal_entity"
+            },
+            "legal_entity_id": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "tenant_id": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
             }
           },
           "required": [
@@ -5861,6 +7146,93 @@
       ],
       "type": "object"
     },
+    "CheckoutInputBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "cart_items": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "customer_phone": {
+          "type": "string"
+        },
+        "customer_ref": {
+          "type": "string"
+        },
+        "payment_method": {
+          "type": "string"
+        },
+        "register_ref": {
+          "type": "string"
+        },
+        "requested_total": {
+          "type": "string"
+        },
+        "shift_ref": {
+          "type": "string"
+        },
+        "till_session_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cart_items",
+        "currency",
+        "payment_method",
+        "requested_total"
+      ],
+      "type": "object"
+    },
+    "CheckoutOperationContract": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/CheckoutInputBinding"
+        },
+        "outcomes": {
+          "items": {
+            "$ref": "#/$defs/CheckoutOutcomeBinding"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "input",
+        "outcomes"
+      ],
+      "type": "object"
+    },
+    "CheckoutOutcomeBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "payment_initiated",
+            "payment_settled",
+            "invoice_issued",
+            "fulfillment_completed"
+          ],
+          "type": "string"
+        },
+        "reference_field": {
+          "type": "string"
+        },
+        "status_field": {
+          "type": "string"
+        },
+        "success_value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "status_field",
+        "success_value"
+      ],
+      "type": "object"
+    },
     "CommandMeta": {
       "additionalProperties": false,
       "properties": {
@@ -5990,6 +7362,13 @@
         "proposal_id": {
           "type": "string"
         },
+        "published_bindings": {
+          "items": {
+            "$ref": "#/$defs/ConfigurationSurfaceBinding"
+          },
+          "maxItems": 512,
+          "type": "array"
+        },
         "roles": {
           "items": {
             "x-open-json-value": true
@@ -6044,10 +7423,23 @@
           },
           "type": "array"
         },
+        "module_blockers": {
+          "items": {
+            "$ref": "#/$defs/ModuleBlocker"
+          },
+          "type": "array"
+        },
         "ordered_doctypes": {
           "items": {
             "type": "string"
           },
+          "type": "array"
+        },
+        "published_bindings": {
+          "items": {
+            "$ref": "#/$defs/ConfigurationSurfaceBinding"
+          },
+          "maxItems": 512,
           "type": "array"
         },
         "valid": {
@@ -6149,6 +7541,13 @@
         },
         "proposal_id": {
           "type": "string"
+        },
+        "published_bindings": {
+          "items": {
+            "$ref": "#/$defs/ConfigurationSurfaceBinding"
+          },
+          "maxItems": 512,
+          "type": "array"
         },
         "roles": {
           "items": {
@@ -6286,6 +7685,218 @@
         "status",
         "version",
         "version_id"
+      ],
+      "type": "object"
+    },
+    "ConfigurationSurfaceBinding": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "anyOf": [
+              {
+                "properties": null,
+                "required": [
+                  "operation_ref"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "catalog_revision": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "input_schema": {
+              "$ref": "#/$defs/SchemaRef",
+              "x-optional-pointer": true
+            },
+            "kind": {
+              "const": "query",
+              "type": "string"
+            },
+            "name": {
+              "maxLength": 160,
+              "type": "string"
+            },
+            "output_schema": {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            "owner_module_id": {
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "catalog_revision",
+            "business_scope",
+            "owner_module_id",
+            "name",
+            "input_schema",
+            "output_schema"
+          ],
+          "type": "object"
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "properties": null,
+                "required": [
+                  "operation_ref"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": null,
+                "required": [
+                  "input_schema"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "catalog_revision": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "projection",
+              "type": "string"
+            },
+            "name": {
+              "maxLength": 160,
+              "type": "string"
+            },
+            "output_schema": {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            "owner_module_id": {
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "catalog_revision",
+            "business_scope",
+            "owner_module_id",
+            "name",
+            "output_schema"
+          ],
+          "type": "object"
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "properties": null,
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "catalog_revision": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "input_schema": {
+              "$ref": "#/$defs/SchemaRef",
+              "x-optional-pointer": true
+            },
+            "kind": {
+              "const": "operation",
+              "type": "string"
+            },
+            "operation_ref": {
+              "maxLength": 386,
+              "pattern": "^[a-z][a-z0-9_.-]{0,127}~[a-z][a-z0-9_.-]{0,127}~[a-z][a-z0-9_.-]{0,127}$",
+              "type": "string"
+            },
+            "output_schema": {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            "owner_module_id": {
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "catalog_revision",
+            "business_scope",
+            "owner_module_id",
+            "operation_ref",
+            "input_schema",
+            "output_schema"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "business_scope": {
+          "$ref": "#/$defs/BusinessScope"
+        },
+        "catalog_revision": {
+          "type": "integer"
+        },
+        "input_schema": {
+          "$ref": "#/$defs/SchemaRef",
+          "x-optional-pointer": true
+        },
+        "kind": {
+          "enum": [
+            "query",
+            "projection",
+            "operation"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "operation_ref": {
+          "type": "string"
+        },
+        "output_schema": {
+          "$ref": "#/$defs/SchemaRef"
+        },
+        "owner_module_id": {
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+          "type": "string"
+        },
+        "view_name": {
+          "maxLength": 160,
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_scope",
+        "catalog_revision",
+        "kind",
+        "output_schema",
+        "owner_module_id",
+        "view_name"
       ],
       "type": "object"
     },
@@ -7534,6 +9145,18 @@
         "max_page_size": {
           "type": "integer"
         },
+        "offline_operations": {
+          "items": {
+            "$ref": "#/$defs/ApplicationCatalogOperation"
+          },
+          "type": "array"
+        },
+        "offline_queries": {
+          "items": {
+            "$ref": "#/$defs/ApplicationCatalogQuery"
+          },
+          "type": "array"
+        },
         "protocol_version": {
           "type": "integer"
         },
@@ -7545,6 +9168,8 @@
         "catalog_revision",
         "max_batch_size",
         "max_page_size",
+        "offline_operations",
+        "offline_queries",
         "protocol_version",
         "snapshot_lifetime_seconds"
       ],
@@ -7767,6 +9392,9 @@
         "complete": {
           "type": "boolean"
         },
+        "fact_key_field": {
+          "type": "string"
+        },
         "input_hash": {
           "type": "string"
         },
@@ -7799,6 +9427,7 @@
         "business_scope",
         "catalog_revision",
         "complete",
+        "fact_key_field",
         "input_hash",
         "replay_position",
         "rows",
@@ -7839,19 +9468,49 @@
       "oneOf": [
         {
           "not": {
-            "properties": null,
-            "required": [
-              "error"
-            ],
-            "type": "object"
+            "anyOf": [
+              {
+                "properties": null,
+                "required": [
+                  "error"
+                ],
+                "type": "object"
+              }
+            ]
           },
           "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "execution_id": {
+              "type": "string"
+            },
+            "operation_ref": {
+              "type": "string"
+            },
+            "output": {
+              "x-max-json-bytes": 1048576,
+              "x-open-json-value": true
+            },
+            "output_schema": {
+              "$ref": "#/$defs/SchemaRef",
+              "x-optional-pointer": true
+            },
+            "revision": {
+              "maxLength": 20,
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "type": "string"
+            },
             "status": {
               "const": "completed",
               "type": "string"
             }
           },
           "required": [
+            "business_scope",
+            "execution_id",
+            "operation_ref",
+            "revision",
             "status",
             "output",
             "output_schema"
@@ -7885,6 +9544,20 @@
             ]
           },
           "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "execution_id": {
+              "type": "string"
+            },
+            "operation_ref": {
+              "type": "string"
+            },
+            "revision": {
+              "maxLength": 20,
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "type": "string"
+            },
             "status": {
               "enum": [
                 "accepted",
@@ -7894,6 +9567,10 @@
             }
           },
           "required": [
+            "business_scope",
+            "execution_id",
+            "operation_ref",
+            "revision",
             "status"
           ],
           "type": "object"
@@ -7918,6 +9595,24 @@
             ]
           },
           "properties": {
+            "business_scope": {
+              "$ref": "#/$defs/BusinessScope"
+            },
+            "error": {
+              "$ref": "#/$defs/Error",
+              "x-optional-pointer": true
+            },
+            "execution_id": {
+              "type": "string"
+            },
+            "operation_ref": {
+              "type": "string"
+            },
+            "revision": {
+              "maxLength": 20,
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "type": "string"
+            },
             "status": {
               "enum": [
                 "rejected",
@@ -7929,6 +9624,10 @@
             }
           },
           "required": [
+            "business_scope",
+            "execution_id",
+            "operation_ref",
+            "revision",
             "status",
             "error"
           ],
@@ -8560,6 +10259,10 @@
         "capability": {
           "type": "string"
         },
+        "checkout": {
+          "$ref": "#/$defs/CheckoutOperationContract",
+          "x-optional-pointer": true
+        },
         "name": {
           "type": "string"
         },
@@ -8611,6 +10314,9 @@
         "offline_eligible": {
           "type": "boolean"
         },
+        "offline_fact_key": {
+          "type": "string"
+        },
         "operation": {
           "type": "string"
         },
@@ -8628,6 +10334,10 @@
         },
         "presentation": {
           "$ref": "#/$defs/SurfacePresentation"
+        },
+        "reference_lookup": {
+          "$ref": "#/$defs/PublishedReferenceLookup",
+          "x-optional-pointer": true
         },
         "scope_policy": {
           "enum": [
@@ -8669,6 +10379,30 @@
       },
       "required": [
         "input"
+      ],
+      "type": "object"
+    },
+    "PublishedReferenceLookup": {
+      "additionalProperties": false,
+      "properties": {
+        "label_field": {
+          "type": "string"
+        },
+        "resource_type": {
+          "type": "string"
+        },
+        "search_field": {
+          "type": "string"
+        },
+        "value_field": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label_field",
+        "resource_type",
+        "search_field",
+        "value_field"
       ],
       "type": "object"
     },
@@ -10042,6 +11776,43 @@
       ],
       "type": "object"
     },
+    "WorkflowHistoryEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "detail": {
+          "type": "string",
+          "x-max-utf8-bytes": 8192
+        },
+        "kind": {
+          "maxLength": 80,
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "status": {
+          "maxLength": 80,
+          "type": "string"
+        },
+        "step_id": {
+          "maxLength": 160,
+          "type": "string"
+        }
+      },
+      "required": [
+        "created_at",
+        "kind",
+        "sequence",
+        "status",
+        "step_id"
+      ],
+      "type": "object"
+    },
     "WorkflowInstance": {
       "additionalProperties": false,
       "properties": {
@@ -10130,9 +11901,39 @@
       "superseded",
       "cancelled"
     ],
+    "BusinessFindingAction": [
+      "waived",
+      "repaired"
+    ],
+    "BusinessFindingKind": [
+      "missing_effect",
+      "duplicate_effect",
+      "amount_mismatch",
+      "scope_mismatch",
+      "unknown_outcome",
+      "pending_grace",
+      "lifecycle_mismatch"
+    ],
+    "BusinessFindingState": [
+      "open",
+      "investigating",
+      "resolved",
+      "waived"
+    ],
     "BusinessScopeKind": [
       "tenant",
       "legal_entity"
+    ],
+    "CheckoutOutcomeKind": [
+      "payment_initiated",
+      "payment_settled",
+      "invoice_issued",
+      "fulfillment_completed"
+    ],
+    "ConfigurationSurfaceKind": [
+      "query",
+      "projection",
+      "operation"
     ],
     "ExtensionKind": [
       "fields",
