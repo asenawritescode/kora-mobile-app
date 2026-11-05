@@ -191,31 +191,3 @@ internal fun KoraApp(state: AppState, vm: AppViewModel) {
     }
 }
 
-@Composable
-internal fun SyncScreen(state: AppState, vm: AppViewModel) {
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
-        item { Spacer(Modifier.height(8.dp)); Text("Connection", fontSize = 26.sp, fontWeight = FontWeight.Bold); Text(if (state.offline) "Offline" else "Connected", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
-        item {
-            EmptyCard(
-                if (state.offline) "Reconnect to Kora" else "Published workspace is online",
-                "Saved actions stay scoped to this signed-in actor and are only complete when Engine returns a completed receipt.",
-            )
-        }
-        if (state.offlineIntents.isNotEmpty()) {
-            item { SectionHeading("Saved actions", "${state.offlineIntents.size} total") }
-            items(state.offlineIntents, key = { it.localOperationId }) { intent ->
-                Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, androidx.compose.material3.MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f))) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text(intent.operationRef, fontWeight = FontWeight.SemiBold)
-                        Text(intent.status.replace('_', ' ').replaceFirstChar { it.uppercase() }, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-                        intent.lastError?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
-                    }
-                }
-            }
-            item { OutlinedButton(onClick = vm::syncOfflineIntents, enabled = !state.offline && !state.busy, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Filled.Sync, null); Spacer(Modifier.width(8.dp)); Text("Check saved actions") } }
-        }
-        if (state.message != null) item { MessageBanner(state.message, state.offline && state.message.contains("waiting", true)) }
-        item { OutlinedButton(onClick = { vm.logout() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Outlined.Logout, null); Spacer(Modifier.width(8.dp)); Text("Sign out") } }
-    }
-}
-
