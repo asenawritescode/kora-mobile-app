@@ -288,6 +288,167 @@ class OfflineRecordRepositoryTest {
         }
     }
 
+    @Test fun uncertainIntentIsReconciledByOriginalKeyAfterCatalogChange() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sends = AtomicInteger()
+        val lookupKeys = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = ServerSocket().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
+        val thread = Thread {
+            while (!server.isClosed) runCatching {
+                server.accept().use { socket ->
+                    val request = readRequest(socket.getInputStream())
+                    when (URI(request.first).path.removePrefix("/s/site")) {
+                        "/api/v2/offline/capabilities" -> respond(socket, capabilitiesJson(revision = 5))
+                        "/api/v2/module-executions/lookup" -> {
+                            lookupKeys += JSONObject(request.second).getString("idempotency_key")
+                            respond(socket, receiptJson())
+                        }
+                        "/api/v2/offline/intents" -> {
+                            sends.incrementAndGet()
+                            respond(socket, JSONObject().put("receipts", org.json.JSONArray()))
+                        }
+                        else -> respondError(socket, "not_found", 404)
+                    }
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        val db = Room.inMemoryDatabaseBuilder(context, KoraDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val scope = Scope("i", "http://127.0.0.1:${server.localPort}", "site", "alice", BusinessScope("tenant-a"))
+            val repo = repository(context, db)
+            val original = catalog(4)
+            val operation = original.operations.single()
+            val sentId = repo.enqueue(scope, original, operation, JSONObject().put("amount", 3), "sent-before-catalog-change")
+            val unknownId = repo.enqueue(scope, original, operation, JSONObject().put("amount", 4), "unknown-before-catalog-change")
+            val queuedId = repo.enqueue(scope, original, operation, JSONObject().put("amount", 5), "queued-before-catalog-change")
+            db.localDao.intent(scope.key, sentId)?.let { db.localDao.putIntent(it.copy(status = "sent")) }
+            db.localDao.intent(scope.key, unknownId)?.let { db.localDao.putIntent(it.copy(status = "outcome_unknown")) }
+
+            val result = repo.sync(scope, catalog(5))
+
+            assertEquals(2, result.acknowledged)
+            assertEquals(listOf("sent-before-catalog-change", "unknown-before-catalog-change"), lookupKeys.toList())
+            assertEquals(0, sends.get())
+            assertEquals("applied", db.localDao.intent(scope.key, sentId)?.status)
+            assertEquals("applied", db.localDao.intent(scope.key, unknownId)?.status)
+            assertEquals("blocked", db.localDao.intent(scope.key, queuedId)?.status)
+        } finally {
+            db.close()
+            server.close()
+            thread.join(1000)
+        }
+    }
+
+    @Test fun uncertainIntentWithoutReceiptAfterCatalogChangeNeedsReviewAndIsNotResent() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sends = AtomicInteger()
+        val lookups = AtomicInteger()
+        val server = ServerSocket().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
+        val thread = Thread {
+            while (!server.isClosed) runCatching {
+                server.accept().use { socket ->
+                    val request = readRequest(socket.getInputStream())
+                    when (URI(request.first).path.removePrefix("/s/site")) {
+                        "/api/v2/offline/capabilities" -> respond(socket, capabilitiesJson(revision = 5))
+                        "/api/v2/module-executions/lookup" -> {
+                            lookups.incrementAndGet()
+                            respondError(socket, "module.operation_receipt_not_found", 404)
+                        }
+                        "/api/v2/offline/intents" -> {
+                            sends.incrementAndGet()
+                            respond(socket, JSONObject().put("receipts", org.json.JSONArray()))
+                        }
+                        else -> respondError(socket, "not_found", 404)
+                    }
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        val db = Room.inMemoryDatabaseBuilder(context, KoraDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val scope = Scope("i", "http://127.0.0.1:${server.localPort}", "site", "alice", BusinessScope("tenant-a"))
+            val repo = repository(context, db)
+            val original = catalog(4)
+            val id = repo.enqueue(scope, original, original.operations.single(), JSONObject().put("amount", 3), "no-receipt-key")
+            db.localDao.intent(scope.key, id)?.let { db.localDao.putIntent(it.copy(status = "outcome_unknown")) }
+
+            val result = repo.sync(scope, catalog(5))
+
+            assertEquals("intent_needs_review", (result.error as? com.kora.mobile.domain.model.KoraError)?.code)
+            assertEquals("blocked", db.localDao.intent(scope.key, id)?.status)
+            assertEquals(1, lookups.get())
+            assertEquals(0, sends.get())
+            repo.sync(scope, catalog(5))
+            assertEquals(1, lookups.get())
+            assertEquals(0, sends.get())
+        } finally {
+            db.close()
+            server.close()
+            thread.join(1000)
+        }
+    }
+
+    @Test fun intentsBlockedBeforeLookupByOlderBuildsAreRecheckedOnceByOriginalKey() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sends = AtomicInteger()
+        val lookupKeys = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = ServerSocket().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
+        val thread = Thread {
+            while (!server.isClosed) runCatching {
+                server.accept().use { socket ->
+                    val request = readRequest(socket.getInputStream())
+                    when (URI(request.first).path.removePrefix("/s/site")) {
+                        "/api/v2/offline/capabilities" -> respond(socket, capabilitiesJson(revision = 5))
+                        "/api/v2/module-executions/lookup" -> {
+                            val key = JSONObject(request.second).getString("idempotency_key")
+                            lookupKeys += key
+                            if (key == "applied-before-upgrade") respond(socket, receiptJson())
+                            else respondError(socket, "module.operation_receipt_not_found", 404)
+                        }
+                        "/api/v2/offline/intents" -> {
+                            sends.incrementAndGet()
+                            respond(socket, JSONObject().put("receipts", org.json.JSONArray()))
+                        }
+                        else -> respondError(socket, "not_found", 404)
+                    }
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        val db = Room.inMemoryDatabaseBuilder(context, KoraDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val scope = Scope("i", "http://127.0.0.1:${server.localPort}", "site", "alice", BusinessScope("tenant-a"))
+            val repo = repository(context, db)
+            val original = catalog(4)
+            val operation = original.operations.single()
+            suspend fun legacyBlock(key: String, error: String): String {
+                val id = repo.enqueue(scope, original, operation, JSONObject().put("amount", 3), key)
+                db.localDao.intent(scope.key, id)?.let { db.localDao.putIntent(it.copy(status = "blocked", lastError = error)) }
+                return id
+            }
+            val appliedId = legacyBlock("applied-before-upgrade", "The actor catalog changed. Review this saved intent before syncing.")
+            val neverSentId = legacyBlock("never-sent-before-upgrade", "The input schema is no longer published")
+            val currentBlockId = legacyBlock("blocked-by-current-build", "The published catalog changed before this action was sent. Review it before syncing.")
+
+            val first = repo.sync(scope, catalog(5))
+
+            assertEquals(1, first.acknowledged)
+            assertEquals("intent_needs_review", (first.error as? com.kora.mobile.domain.model.KoraError)?.code)
+            assertEquals(listOf("applied-before-upgrade", "never-sent-before-upgrade"), lookupKeys.toList())
+            assertEquals("applied", db.localDao.intent(scope.key, appliedId)?.status)
+            assertEquals("blocked", db.localDao.intent(scope.key, neverSentId)?.status)
+            assertEquals("blocked", db.localDao.intent(scope.key, currentBlockId)?.status)
+            assertEquals(0, sends.get())
+
+            repo.sync(scope, catalog(5))
+            assertEquals(2, lookupKeys.size)
+            assertEquals("blocked", db.localDao.intent(scope.key, neverSentId)?.status)
+            assertEquals(0, sends.get())
+        } finally {
+            db.close()
+            server.close()
+            thread.join(1000)
+        }
+    }
+
     @Test fun revokedOperationOrSchemaBlocksSavedIntentWithoutDispatch() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val sends = AtomicInteger()
@@ -349,7 +510,7 @@ class OfflineRecordRepositoryTest {
             override fun remove(key: String) = Unit
         })), EngineContractDecoder.fromAssets(context))
 
-    private fun capabilitiesJson(operationEligible: Boolean = true): JSONObject {
+    private fun capabilitiesJson(operationEligible: Boolean = true, revision: Int = 4): JSONObject {
         val operations = org.json.JSONArray()
         if (operationEligible) operations.put(JSONObject().put("operation_ref", "sales.orders~orders~create").put("owner_module_id", "sales.orders")
             .put("capability", "orders.write").put("operation", "create").put("input_schema", JSONObject().put("id", "orders.input").put("version", 1))
@@ -360,7 +521,7 @@ class OfflineRecordRepositoryTest {
             .put("input_schema", JSONObject().put("id", "feed.input").put("version", 1)).put("output_schema", JSONObject().put("id", "feed.output").put("version", 1))
             .put("scope_policy", "tenant_shared").put("allowed_fields", org.json.JSONArray().put("id")).put("page_limit", 10)
             .put("presentation", JSONObject()).put("offline_eligible", true).put("offline_fact_key", "id")
-        return JSONObject().put("protocol_version", 2).put("catalog_revision", 4).put("max_batch_size", 20).put("max_page_size", 100)
+        return JSONObject().put("protocol_version", 2).put("catalog_revision", revision).put("max_batch_size", 20).put("max_page_size", 100)
             .put("snapshot_lifetime_seconds", 86400).put("offline_operations", operations).put("offline_queries", org.json.JSONArray().put(query))
     }
     private fun receiptJson() = JSONObject().put("execution_id", "exec-4").put("operation_ref", "sales.orders~orders~create")

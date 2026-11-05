@@ -76,6 +76,7 @@ abstract class LocalDao {
     @Insert(onConflict = OnConflictStrategy.ABORT) abstract suspend fun insertIntent(intent: OfflineIntentEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun putIntent(intent: OfflineIntentEntity)
     @Query("SELECT * FROM offline_intents WHERE scope_key=:scope AND status IN ('queued','sent','accepted','outcome_unknown') ORDER BY created_at, local_operation_id") abstract suspend fun pendingIntents(scope: String): List<OfflineIntentEntity>
+    @Query("SELECT * FROM offline_intents WHERE scope_key=:scope AND status='blocked' ORDER BY created_at, local_operation_id") abstract suspend fun blockedIntents(scope: String): List<OfflineIntentEntity>
     @Query("SELECT * FROM offline_intents WHERE scope_key=:scope AND local_operation_id=:id") abstract suspend fun intent(scope: String, id: String): OfflineIntentEntity?
     @Query("SELECT * FROM offline_intents WHERE scope_key=:scope ORDER BY created_at, local_operation_id") abstract fun observeIntents(scope: String): Flow<List<OfflineIntentEntity>>
     @Query("DELETE FROM offline_intents WHERE scope_key=:scope AND local_operation_id=:id") abstract suspend fun deleteIntent(scope: String, id: String)
