@@ -179,7 +179,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun KoraApp(state: AppState, vm: AppViewModel) {
+internal fun KoraApp(state: AppState, vm: AppViewModel) {
     Surface(modifier = Modifier.fillMaxSize(), color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
         when (state.stage) {
             AppStage.SERVER -> ServerSetup(state, onNext = vm::goToLogin, onConnect = vm::connect)
@@ -190,7 +190,7 @@ private fun KoraApp(state: AppState, vm: AppViewModel) {
 }
 
 @Composable
-private fun ServerSetup(state: AppState, onNext: (String, String) -> Unit, onConnect: (String, String) -> Unit) {
+internal fun ServerSetup(state: AppState, onNext: (String, String) -> Unit, onConnect: (String, String) -> Unit) {
     var url by remember(state.serverUrl) { mutableStateOf(state.serverUrl) }
     var site by remember(state.siteRef) { mutableStateOf(state.siteRef) }
     val isBusy = state.busy
@@ -241,7 +241,7 @@ private fun ServerSetup(state: AppState, onNext: (String, String) -> Unit, onCon
 }
 
 @Composable
-private fun BrandMark() {
+internal fun BrandMark() {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(46.dp).background(androidx.compose.material3.MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) {
             Text("K", color = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
@@ -252,7 +252,7 @@ private fun BrandMark() {
 }
 
 @Composable
-private fun LoginScreen(state: AppState, onBack: () -> Unit, onMagicLink: (String) -> Unit, onChangeServer: () -> Unit) {
+internal fun LoginScreen(state: AppState, onBack: () -> Unit, onMagicLink: (String) -> Unit, onChangeServer: () -> Unit) {
     var email by remember { mutableStateOf("") }
     androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.fillMaxSize().imePadding(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 24.dp, vertical = 24.dp), verticalArrangement = Arrangement.Center) {
       item {
@@ -280,7 +280,7 @@ private fun LoginScreen(state: AppState, onBack: () -> Unit, onMagicLink: (Strin
 }
 
 @Composable
-private fun ServerPill(url: String, site: String, onChange: () -> Unit) {
+internal fun ServerPill(url: String, site: String, onChange: () -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.secondary), shape = RoundedCornerShape(14.dp)) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Lock, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
@@ -296,7 +296,7 @@ private fun ServerPill(url: String, site: String, onChange: () -> Unit) {
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
+internal fun WorkspaceShell(state: AppState, vm: AppViewModel) {
     val tabs = buildList {
         add("Home" to Icons.Filled.Home)
         add("Browse" to Icons.Filled.Inventory2)
@@ -363,7 +363,7 @@ private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
 }
 
 @Composable
-private fun ScopePicker(state: AppState, vm: AppViewModel) {
+internal fun ScopePicker(state: AppState, vm: AppViewModel) {
     val catalog = state.publishedCatalog ?: return
     if (state.availableEntityChoices.isEmpty()) return
     var expanded by remember { mutableStateOf(false) }
@@ -386,7 +386,7 @@ private fun ScopePicker(state: AppState, vm: AppViewModel) {
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun PointOfSaleScreen(state: AppState, vm: AppViewModel) {
+internal fun PointOfSaleScreen(state: AppState, vm: AppViewModel) {
     var search by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("All") }
     var basketOpen by remember { mutableStateOf(false) }
@@ -589,7 +589,7 @@ private fun PointOfSaleScreen(state: AppState, vm: AppViewModel) {
 }
 
 @Composable
-private fun DashboardScreen(state: AppState, vm: AppViewModel) {
+internal fun DashboardScreen(state: AppState, vm: AppViewModel) {
     var query by remember { mutableStateOf("") }
     val normalizedQuery = query.trim().lowercase()
     val catalog = state.publishedCatalog
@@ -646,7 +646,7 @@ private fun DashboardScreen(state: AppState, vm: AppViewModel) {
 }
 
 @Composable
-private fun WorkScreen(state: AppState, vm: AppViewModel) {
+internal fun WorkScreen(state: AppState, vm: AppViewModel) {
     val catalog = state.publishedCatalog
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -690,7 +690,7 @@ private fun WorkScreen(state: AppState, vm: AppViewModel) {
 }
 
 @Composable
-private fun PublishedSurfaceRow(title: String, subtitle: String, enabled: Boolean = true, onClick: () -> Unit) {
+internal fun PublishedSurfaceRow(title: String, subtitle: String, enabled: Boolean = true, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().heightIn(min = 54.dp).clickable(enabled = enabled, onClick = onClick).padding(start = 45.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) { Text(title, style = androidx.compose.material3.MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(subtitle, style = androidx.compose.material3.MaterialTheme.typography.bodySmall, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
         if (enabled) Icon(Icons.Outlined.ChevronRight, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
@@ -698,7 +698,7 @@ private fun PublishedSurfaceRow(title: String, subtitle: String, enabled: Boolea
 }
 
 @Composable
-private fun PublishedReadDetail(state: AppState, vm: AppViewModel) {
+internal fun PublishedReadDetail(state: AppState, vm: AppViewModel) {
     val query = state.selectedPublishedQuery
     val projection = state.selectedProjection
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -727,7 +727,7 @@ private fun PublishedReadDetail(state: AppState, vm: AppViewModel) {
 }
 
 @Composable
-private fun PublishedRowDetail(row: JSONObject) {
+internal fun PublishedRowDetail(row: JSONObject) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         val ref = row.optJSONObject("business_ref")
         if (ref != null) {
@@ -739,7 +739,7 @@ private fun PublishedRowDetail(row: JSONObject) {
 }
 
 @Composable
-private fun PublishedOperationDetail(state: AppState, vm: AppViewModel) {
+internal fun PublishedOperationDetail(state: AppState, vm: AppViewModel) {
     val operation = state.selectedPublishedOperation ?: return
     val inputSchema = state.publishedCatalog?.schemas?.singleOrNull { it.ref == operation.inputSchema }?.schema
     val properties = inputSchema?.optJSONObject("properties")
@@ -801,7 +801,7 @@ private fun PublishedOperationDetail(state: AppState, vm: AppViewModel) {
     }
 }
 
-private fun operationFormJson(values: Map<String, String>, properties: JSONObject): String {
+internal fun operationFormJson(values: Map<String, String>, properties: JSONObject): String {
     val payload = JSONObject()
     values.forEach { (name, raw) ->
         if (raw.isBlank()) return@forEach
@@ -818,7 +818,7 @@ private fun operationFormJson(values: Map<String, String>, properties: JSONObjec
 }
 
 @Composable
-private fun RecordListScreen(state: AppState, vm: AppViewModel) {
+internal fun RecordListScreen(state: AppState, vm: AppViewModel) {
     val doctype = state.selectedDoctype ?: return
     val components = state.doctypeManifest?.optJSONObject("spec")?.optJSONObject("layout")?.optJSONArray("children")
     val tableComponent = components?.let { rows ->
@@ -871,7 +871,7 @@ private fun RecordListScreen(state: AppState, vm: AppViewModel) {
 }
 
 @Composable
-private fun RecordCard(
+internal fun RecordCard(
     record: JSONObject,
     titleField: String,
     columns: List<String>,
@@ -922,7 +922,7 @@ private fun RecordCard(
 }
 
 @Composable
-private fun RecordDetailScreen(state: AppState, vm: AppViewModel) {
+internal fun RecordDetailScreen(state: AppState, vm: AppViewModel) {
     val record = state.selectedRecord ?: return
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     val visibleFields = state.schemaFields.filterNot { it.hidden }
@@ -1151,17 +1151,17 @@ private fun RecordDetailScreen(state: AppState, vm: AppViewModel) {
     }
 }
 
-private fun formatCurrency(value: Any?): String {
+internal fun formatCurrency(value: Any?): String {
     val number = value?.toString()?.toDoubleOrNull() ?: return value?.toString() ?: "—"
     val formatted = java.text.NumberFormat.getNumberInstance(java.util.Locale("en", "KE")).format(number)
     return "KES $formatted"
 }
 
-private data class MobileReportMetric(val label: String, val value: String)
-private data class MobileReportChart(val title: String, val rows: JSONArray, val indexField: String, val seriesField: String, val mode: String, val format: String = "number")
+internal data class MobileReportMetric(val label: String, val value: String)
+internal data class MobileReportChart(val title: String, val rows: JSONArray, val indexField: String, val seriesField: String, val mode: String, val format: String = "number")
 
 @Composable
-private fun ReportChartCard(chart: MobileReportChart) {
+internal fun ReportChartCard(chart: MobileReportChart) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     val values = (0 until chart.rows.length()).mapNotNull { index -> (chart.rows.optJSONObject(index)?.opt(chart.seriesField) as? Number)?.toFloat() }
     Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = colors.surfaceContainerLow)) {
@@ -1256,7 +1256,7 @@ private fun ReportChartCard(chart: MobileReportChart) {
 }
 
 @Composable
-private fun ReportsScreen(state: AppState, vm: AppViewModel) {
+internal fun ReportsScreen(state: AppState, vm: AppViewModel) {
     var showReportData by remember(state.selectedReportName) { mutableStateOf(false) }
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     val catalogModels = state.analyticsCatalog?.optJSONArray("models") ?: JSONArray()
@@ -1416,7 +1416,7 @@ private fun ReportsScreen(state: AppState, vm: AppViewModel) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RecordForm(state: AppState, vm: AppViewModel) {
+internal fun RecordForm(state: AppState, vm: AppViewModel) {
     val context = LocalContext.current
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     val visibleFields = state.schemaFields.filter { fieldIsVisible(it, state.formValues) }
@@ -1630,7 +1630,7 @@ private fun RecordForm(state: AppState, vm: AppViewModel) {
 
 @Composable
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
-private fun KoraTextField(
+internal fun KoraTextField(
     value: String,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -1698,7 +1698,7 @@ private fun KoraTextField(
 }
 
 @Composable
-private fun ChoiceField(
+internal fun ChoiceField(
     label: String,
     value: String,
     placeholder: String,
@@ -1757,7 +1757,7 @@ private fun ChoiceField(
 }
 
 @Composable
-private fun PickerField(label: String, value: String, placeholder: String, enabled: Boolean, onClick: () -> Unit) {
+internal fun PickerField(label: String, value: String, placeholder: String, enabled: Boolean, onClick: () -> Unit) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Text(label, style = androidx.compose.material3.MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium, color = colors.onSurface)
@@ -1777,7 +1777,7 @@ private fun PickerField(label: String, value: String, placeholder: String, enabl
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun ChildTableField(
+internal fun ChildTableField(
     field: FieldSchema,
     value: Any?,
     enabled: Boolean,
@@ -1911,20 +1911,20 @@ private fun ChildTableField(
     }
 }
 
-private fun parseChildDefault(type: String, value: String): Any? = when (type) {
+internal fun parseChildDefault(type: String, value: String): Any? = when (type) {
     "Check" -> value == "1" || value.equals("true", true)
     "Int" -> value.toLongOrNull() ?: value
     "Float", "Currency", "Percent" -> value.toDoubleOrNull() ?: value
     else -> value
 }
 
-private fun fieldIsVisible(field: FieldSchema, values: Map<String, Any?>): Boolean =
+internal fun fieldIsVisible(field: FieldSchema, values: Map<String, Any?>): Boolean =
     !field.hidden && evaluateFieldCondition(field.dependsOn, values, true)
 
-private fun fieldIsRequired(field: FieldSchema, values: Map<String, Any?>): Boolean =
+internal fun fieldIsRequired(field: FieldSchema, values: Map<String, Any?>): Boolean =
     field.reqd || evaluateFieldCondition(field.mandatoryDependsOn, values, false)
 
-private fun fieldConstraintHint(field: FieldSchema, value: Any?, values: Map<String, Any?>): String? {
+internal fun fieldConstraintHint(field: FieldSchema, value: Any?, values: Map<String, Any?>): String? {
     if (value == null || value == JSONObject.NULL || value.toString().isBlank()) return null
     for (constraint in field.constraints) {
         if (!evaluateFieldCondition(constraint.condition, values, true)) continue
@@ -1945,7 +1945,7 @@ private fun fieldConstraintHint(field: FieldSchema, value: Any?, values: Map<Str
     return null
 }
 
-private fun evaluateFieldCondition(condition: String?, values: Map<String, Any?>, fallback: Boolean): Boolean {
+internal fun evaluateFieldCondition(condition: String?, values: Map<String, Any?>, fallback: Boolean): Boolean {
     if (condition.isNullOrBlank()) return fallback
     return condition.split(',').map(String::trim).filter(String::isNotBlank).all { token ->
         val expr = token.removePrefix("eval:").removePrefix("doc.")
@@ -1969,7 +1969,7 @@ private fun evaluateFieldCondition(condition: String?, values: Map<String, Any?>
     }
 }
 
-private fun fieldTruthy(value: Any?): Boolean = when (value) {
+internal fun fieldTruthy(value: Any?): Boolean = when (value) {
     null -> false
     is Boolean -> value
     is Number -> value.toDouble() != 0.0
@@ -1977,7 +1977,7 @@ private fun fieldTruthy(value: Any?): Boolean = when (value) {
 }
 
 @Composable
-private fun RequestsScreen(state: AppState, vm: AppViewModel) {
+internal fun RequestsScreen(state: AppState, vm: AppViewModel) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Spacer(Modifier.height(8.dp)); SectionHeading("Requests", "Needs action") }
         item { OutlinedButton(onClick = vm::refreshRequests, enabled = !state.workflowBusy, modifier = Modifier.fillMaxWidth()) { Text("Refresh status") } }
@@ -2055,7 +2055,7 @@ private fun RequestsScreen(state: AppState, vm: AppViewModel) {
 }
 
 @Composable
-private fun SyncScreen(state: AppState, vm: AppViewModel) {
+internal fun SyncScreen(state: AppState, vm: AppViewModel) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
         item { Spacer(Modifier.height(8.dp)); Text("Connection", fontSize = 26.sp, fontWeight = FontWeight.Bold); Text(if (state.offline) "Offline" else "Connected", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
         item {
@@ -2083,7 +2083,7 @@ private fun SyncScreen(state: AppState, vm: AppViewModel) {
 }
 
 @Composable
-private fun DocTypeRow(item: DocTypeNavItem, onClick: () -> Unit) {
+internal fun DocTypeRow(item: DocTypeNavItem, onClick: () -> Unit) {
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, androidx.compose.material3.MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f))) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(38.dp).background(androidx.compose.material3.MaterialTheme.colorScheme.secondary, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Inventory2, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp)) }
@@ -2094,7 +2094,7 @@ private fun DocTypeRow(item: DocTypeNavItem, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ModuleCard(title: String, count: Int, previews: List<String>, onClick: () -> Unit) {
+internal fun ModuleCard(title: String, count: Int, previews: List<String>, onClick: () -> Unit) {
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, androidx.compose.material3.MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f))) {
         Column(Modifier.padding(17.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2108,26 +2108,26 @@ private fun ModuleCard(title: String, count: Int, previews: List<String>, onClic
 }
 
 @Composable
-private fun SectionHeading(title: String, detail: String) {
+internal fun SectionHeading(title: String, detail: String) {
     Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { Text(title, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, modifier = Modifier.weight(1f)); Text(detail, fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
 }
 
 @Composable
-private fun InfoRow(icon: ImageVector, title: String, detail: String) {
+internal fun InfoRow(icon: ImageVector, title: String, detail: String) {
     Card(shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary); Spacer(Modifier.width(10.dp)); Column { Text(title, fontWeight = FontWeight.Medium); Text(detail, fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) } } }
 }
 
-private fun isPassiveConnectionMessage(message: String): Boolean =
+internal fun isPassiveConnectionMessage(message: String): Boolean =
     message.startsWith("Offline ·") || message.contains("waiting to sync", ignoreCase = true)
 
 @Composable
-private fun MessageBanner(message: String, warning: Boolean) {
+internal fun MessageBanner(message: String, warning: Boolean) {
     val color = if (warning) androidx.compose.material3.MaterialTheme.colorScheme.error else androidx.compose.material3.MaterialTheme.colorScheme.primary
     Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = color.copy(alpha = .08f)), shape = RoundedCornerShape(13.dp)) { Text(message, Modifier.padding(13.dp), color = color, fontSize = 13.sp) }
 }
 
 @Composable
-private fun EmptyCard(title: String, detail: String) {
+internal fun EmptyCard(title: String, detail: String) {
     Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(12.dp)) {
         Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.size(44.dp).background(androidx.compose.material3.MaterialTheme.colorScheme.secondary, CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Inventory2, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary) }
@@ -2136,7 +2136,7 @@ private fun EmptyCard(title: String, detail: String) {
     }
 }
 
-private fun formatHumanDate(value: String, dateOnly: Boolean): String = runCatching {
+internal fun formatHumanDate(value: String, dateOnly: Boolean): String = runCatching {
     val locale = Locale.getDefault()
     if (dateOnly) {
         LocalDate.parse(value.take(10)).format(DateTimeFormatter.ofPattern("MMM d, yyyy", locale))
