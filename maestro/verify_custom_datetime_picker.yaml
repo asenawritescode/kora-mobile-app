@@ -1,0 +1,25 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Sale"
+- waitForAnimationToEnd
+- tapOn:
+    id: "record-new"
+- waitForAnimationToEnd
+- tapOn:
+    id: "picker-field-sale-date-time-required"
+- assertVisible: "24-hour time"
+- assertVisible: "Hour"
+- assertVisible: "Minute"
+- takeScreenshot: custom-date-time-picker
+- tapOn: "Cancel"
+- tapOn: "Close form"
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "POS"
+- waitForAnimationToEnd
+- assertVisible: "Search product"

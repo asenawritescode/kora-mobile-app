@@ -9,7 +9,7 @@ import java.net.URI
 class SessionCookieJar(private val vault: SecretVault) {
     fun header(origin: String, siteRef: String?, path: String): String? = load(key(origin, siteRef)).filter { cookie ->
         val req = path.ifBlank { "/" }
-        (cookie.path.isNullOrBlank() || req.startsWith(cookie.path)) && (!cookie.secure || origin.startsWith("https://")) && (cookie.maxAge < 0 || cookie.maxAge > 0)
+        (cookie.path.isNullOrBlank() || req.startsWith(cookie.path)) && (!cookie.secure || origin.startsWith("https://") || isLoopback(origin)) && (cookie.maxAge < 0 || cookie.maxAge > 0)
     }.joinToString("; ") { "${it.name}=${it.value}" }.ifBlank { null }
 
     fun save(origin: String, siteRef: String?, setCookies: List<String>) {
@@ -55,4 +55,8 @@ class SessionCookieJar(private val vault: SecretVault) {
         val path = uri.path.trimEnd('/') + (siteRef?.takeIf { it.isNotBlank() }?.let { "/s/$it" } ?: "")
         return "cookies_${uri.host}_${path.replace('/', '_')}"
     }
+
+    private fun isLoopback(origin: String): Boolean = runCatching {
+        URI(origin).host in setOf("localhost", "127.0.0.1", "::1")
+    }.getOrDefault(false)
 }

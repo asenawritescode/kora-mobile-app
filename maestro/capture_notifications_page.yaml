@@ -1,0 +1,9 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Notifications"
+- waitForAnimationToEnd
+- tapOn: "View all"
+- waitForAnimationToEnd
+- assertVisible: "No notifications yet"

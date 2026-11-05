@@ -1,0 +1,16 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Ask Kori"
+- waitForAnimationToEnd
+- tapOn: "Close Ask Kori"
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- assertVisible: "Settings"
+- tapOn: "Settings"
+- waitForAnimationToEnd
+- assertVisible: "Overview"
+- assertVisible: "Tables"
+- takeScreenshot: settings-index

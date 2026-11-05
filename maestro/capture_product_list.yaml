@@ -1,0 +1,10 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Product"
+- waitForAnimationToEnd
+- assertVisible: "Search records"
+- takeScreenshot: product-list

@@ -1,0 +1,4 @@
+appId: com.kora.mobile
+---
+- assertVisible: Administrator
+- assertVisible: John Doe

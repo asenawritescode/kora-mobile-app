@@ -1,0 +1,17 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Product"
+- waitForAnimationToEnd
+- tapOn: "Filter"
+- waitForAnimationToEnd
+- assertVisible: "Sort and filter"
+- tapOn: "Utensil"
+- tapOn: "Show 2 records"
+- waitForAnimationToEnd
+- assertVisible: "Category: Utensil ×"
+- assertVisible: "2 records"
+- takeScreenshot: product-list-filtered

@@ -95,24 +95,29 @@ class OfflineRecordRepository(
         }
     }
 
-    suspend fun saveAction(scope: Scope, actionId: String, request: JSONObject, idempotencyKey: String, recordType: String, projection: JSONObject, effect: JSONObject? = null, draftId: String? = null) = db.withTransaction {
+    suspend fun saveAction(scope: Scope, actionId: String, request: JSONObject, idempotencyKey: String, recordType: String, projection: JSONObject, effect: JSONObject? = null, draftId: String? = null): String {
         val id = UUID.randomUUID().toString()
-        val localId = "local:$id"
-        val timestamp = maxOf(now(), (dao.queuedMutations(scope.key).maxOfOrNull { it.createdAt } ?: 0) + 1)
-        val record = LocalRecord(scope.key, recordType, localId, null, encode(projection), null, null, timestamp)
-        val mutation = LocalMutation(id, scope.key, "@view-action/$actionId", null, idempotencyKey, encode(request), timestamp, projection.optString("reference"), localId = localId)
-        dao.commitLocal(record, mutation, draftId)
-        if (effect != null) {
-            val type = effect.optString("doctype")
-            val field = effect.optString("quantity_field")
-            val lines = effect.optJSONArray("lines") ?: JSONArray()
-            if (type.isBlank() || field.isBlank() || lines.length() == 0 || (0 until lines.length()).any { lines.optJSONObject(it)?.optString("quantity", "0")?.toBigDecimalOrNull() in setOf(null, java.math.BigDecimal.ZERO) }) throw KoraError("invalid_local_effect", "This change is missing quantity details")
-            dao.putEntry(LocalEntry(scope.key, "effect:$id", encode(effect), now(), "local-effect"))
-            val names = linkedSetOf<String>()
-            for (i in 0 until lines.length()) lines.optJSONObject(i)?.optString("name")?.takeIf(String::isNotBlank)?.let { names += it }
-            for (name in names) recomputeQuantity(scope, type, name, field, requireAvailable = true)
+        db.withTransaction {
+            val localId = "local:$id"
+            val timestamp = maxOf(now(), (dao.queuedMutations(scope.key).maxOfOrNull { it.createdAt } ?: 0) + 1)
+            val record = LocalRecord(scope.key, recordType, localId, null, encode(projection), null, null, timestamp)
+            val mutation = LocalMutation(id, scope.key, "@view-action/$actionId", null, idempotencyKey, encode(request), timestamp, projection.optString("reference"), localId = localId)
+            dao.commitLocal(record, mutation, draftId)
+            if (effect != null) {
+                val type = effect.optString("doctype")
+                val field = effect.optString("quantity_field")
+                val lines = effect.optJSONArray("lines") ?: JSONArray()
+                if (type.isBlank() || field.isBlank() || lines.length() == 0 || (0 until lines.length()).any { lines.optJSONObject(it)?.optString("quantity", "0")?.toBigDecimalOrNull() in setOf(null, java.math.BigDecimal.ZERO) }) throw KoraError("invalid_local_effect", "This change is missing quantity details")
+                dao.putEntry(LocalEntry(scope.key, "effect:$id", encode(effect), now(), "local-effect"))
+                val names = linkedSetOf<String>()
+                for (i in 0 until lines.length()) lines.optJSONObject(i)?.optString("name")?.takeIf(String::isNotBlank)?.let { names += it }
+                for (name in names) recomputeQuantity(scope, type, name, field, requireAvailable = true)
+            }
         }
+        return id
     }
+
+    suspend fun mutation(scope: Scope, id: String): LocalMutation? = dao.mutation(scope.key, id)
 
     private suspend fun relatedEffects(scope: Scope, type: String, record: LocalRecord, field: String): List<Pair<LocalMutation, JSONObject>> {
         return dao.entries(scope.key, "local-effect").mapNotNull { entry ->
@@ -489,6 +494,42 @@ class OfflineRecordRepository(
                 dao.putRecord(record.copy(encryptedPayload = encode(effective)))
             }
         }
+    }
+
+    /** Discard local pending work for this scope without sending it to Kora. */
+    suspend fun discardAllPending(scope: Scope): Int = syncMutex.withLock {
+        val pending = dao.queuedMutations(scope.key)
+        var discarded = 0
+        for (snapshot in pending) {
+            val current = dao.mutation(scope.key, snapshot.id) ?: continue
+            if (current.status in setOf("acked", "discarded")) continue
+            val affectedProducts = effectProducts(scope, current)
+            val didDiscard = db.withTransaction {
+                val operation = dao.mutation(scope.key, current.id) ?: return@withTransaction false
+                if (operation.status in setOf("acked", "discarded")) return@withTransaction false
+                val record = operation.localId?.let { dao.recordByLocalId(scope.key, it) }
+                    ?: operation.recordName?.let { dao.record(scope.key, operation.doctype, it) }
+                dao.putMutation(operation.copy(status = "discarded", lastError = null))
+                dao.deleteEntry(scope.key, "effect:${operation.id}")
+                if (record != null) {
+                    val remaining = dao.queuedMutations(scope.key).filter { target(it, record) }
+                    if (record.encryptedServerPayload == null && remaining.isEmpty()) {
+                        dao.deleteRecord(scope.key, record.doctype, record.localId)
+                    } else {
+                        val baseline = record.encryptedServerPayload?.let(::decode) ?: JSONObject()
+                        val effective = remaining.fold(baseline) { acc, queued -> merged(acc, decode(queued.encryptedPayload)) }
+                        dao.putRecord(record.copy(encryptedPayload = encode(effective), updatedAt = now()))
+                    }
+                }
+                true
+            }
+            if (!didDiscard) continue
+            for ((doctype, name, field) in affectedProducts) {
+                runCatching { recomputeQuantity(scope, doctype, name, field) }
+            }
+            discarded++
+        }
+        discarded
     }
 
     suspend fun correct(scope: Scope, id: String, payload: JSONObject, draftId: String?) = db.withTransaction {

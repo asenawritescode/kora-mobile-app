@@ -1,0 +1,20 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Sale"
+- waitForAnimationToEnd
+- tapOn:
+    id: "record-new"
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element: "Payment method (required)"
+    direction: DOWN
+    timeout: 10000
+    visibilityPercentage: 70
+- assertVisible: "Payment method (required)"
+- tapOn: "Cash"
+- assertVisible: "Payment method (required)"
+- takeScreenshot: sale-form-payment-state
