@@ -16,6 +16,17 @@ import org.json.JSONObject
 import java.util.UUID
 
 private val UNCERTAIN_STATUSES = setOf("sent", "accepted", "outcome_unknown")
+private const val NEEDS_REVIEW_MESSAGE = "Engine has no record of this saved action and the published catalog changed. Review it before sending it again."
+
+// Exact errors written by builds that checked the catalog before the receipt lookup. Those builds blocked
+// sent and never-sent intents identically and recorded no dispatch, so these intents are re-checked by lookup once.
+private val PRE_LOOKUP_BLOCK_MESSAGES = setOf(
+    "This action is no longer published. Your saved intent needs review.",
+    "The actor catalog changed. Review this saved intent before syncing.",
+    "Engine no longer declares this action eligible for offline replay",
+    "The input schema is no longer published",
+    "Saved intent no longer matches its published schema",
+)
 
 /** Durable E4 intents and module facts. Intents are never applied as local record mutations. */
 class OfflineRecordRepository(
@@ -66,6 +77,21 @@ class OfflineRecordRepository(
         } catch (error: Exception) {
             return@withLock SyncResult(0, error)
         }
+        for (stranded in dao.blockedIntents(scope.key).filter { it.encryptedReceipt == null && it.lastError in PRE_LOOKUP_BLOCK_MESSAGES }) {
+            if (!canSync(scope)) return@withLock SyncResult(acknowledged, KoraError("actor_changed", "Sign in again to sync this workspace", 401))
+            try {
+                val recovered = remote.lookupIntent(scope, stranded.operationRef, stranded.idempotencyKey)
+                if (recovered == null) {
+                    dao.putIntent(stranded.copy(lastError = NEEDS_REVIEW_MESSAGE))
+                    firstError = firstError ?: KoraError("intent_needs_review", NEEDS_REVIEW_MESSAGE, 409)
+                    continue
+                }
+                validateRecoveredReceipt(scope, catalog, stranded, catalog.operations.singleOrNull { it.operationRef == stranded.operationRef }, recovered)
+                if (recordReceipt(stranded, recovered)) acknowledged++
+            } catch (error: Exception) {
+                firstError = firstError ?: error
+            }
+        }
         for (original in dao.pendingIntents(scope.key)) {
             if (!canSync(scope)) return@withLock SyncResult(acknowledged, KoraError("actor_changed", "Sign in again to sync this workspace", 401))
             var requestDispatched = false
@@ -81,22 +107,22 @@ class OfflineRecordRepository(
                         continue
                     }
                     if (published == null || !matchesCatalog(original, catalog, published)) {
-                        throw KoraError("intent_needs_review", "Engine has no record of this saved action and the published catalog changed. Review it before sending it again.", 409)
+                        throw KoraError("intent_needs_review", NEEDS_REVIEW_MESSAGE, 409)
                     }
                 }
                 val operation = published
-                    ?: throw KoraError("catalog_revoked", "This action is no longer published. Your saved intent needs review.", 409)
+                    ?: throw KoraError("catalog_revoked", "This action is no longer published. Review this saved action.", 409)
                 if (!matchesCatalog(original, catalog, operation)) {
-                    throw KoraError("catalog_changed", "The actor catalog changed. Review this saved intent before syncing.", 409)
+                    throw KoraError("catalog_changed", "The published catalog changed before this action was sent. Review it before syncing.", 409)
                 }
                 if (!declaresOfflineOperation(capabilities, operation)) {
-                    throw KoraError("module.operation_online_only", "Engine no longer declares this action eligible for offline replay", 409)
+                    throw KoraError("module.operation_online_only", "Engine no longer allows this action offline. Review this saved action.", 409)
                 }
                 val input = decodeObject(original.encryptedInput)
                 val schema = catalog.schemas.singleOrNull { it.ref == operation.inputSchema }?.schema
-                    ?: throw KoraError("schema_revoked", "The input schema is no longer published", 409)
+                    ?: throw KoraError("schema_revoked", "This action's input form is no longer published. Review this saved action.", 409)
                 val violations = decoder.validateSchemaDocument(schema, input)
-                if (violations.isNotEmpty()) throw KoraError("schema_invalid", "Saved intent no longer matches its published schema", 409)
+                if (violations.isNotEmpty()) throw KoraError("schema_invalid", "This saved action no longer matches its published form. Review it before syncing.", 409)
                 val wire = JSONObject().put("local_operation_id", original.localOperationId)
                     .put("business_scope", scope.businessScope.toWire()).put("operation_ref", original.operationRef)
                     .put("input_schema", JSONObject(original.inputSchema)).put("input", input)
