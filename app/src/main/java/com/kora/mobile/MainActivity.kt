@@ -148,6 +148,7 @@ import org.json.JSONArray
 import com.kora.mobile.ui.theme.KoraTheme
 import com.kora.mobile.ui.theme.KoraTokens
 import kotlinx.coroutines.launch
+import com.kora.mobile.ui.screens.*
 import com.kora.mobile.ui.components.*
 
 class MainActivity : ComponentActivity() {
@@ -186,100 +187,6 @@ internal fun KoraApp(state: AppState, vm: AppViewModel) {
             AppStage.SERVER -> ServerSetup(state, onNext = vm::goToLogin, onConnect = vm::connect)
             AppStage.LOGIN -> LoginScreen(state, onBack = { vm.logout() }, onMagicLink = vm::requestMagicLink, onChangeServer = { vm.logout() })
             AppStage.WORKSPACE -> WorkspaceShell(state, vm)
-        }
-    }
-}
-
-@Composable
-internal fun ServerSetup(state: AppState, onNext: (String, String) -> Unit, onConnect: (String, String) -> Unit) {
-    var url by remember(state.serverUrl) { mutableStateOf(state.serverUrl) }
-    var site by remember(state.siteRef) { mutableStateOf(state.siteRef) }
-    val isBusy = state.busy
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val compact = maxHeight < 600.dp
-        androidx.compose.foundation.lazy.LazyColumn(
-            modifier = Modifier.fillMaxSize().imePadding(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            item {
-                Column(Modifier.fillMaxWidth().widthIn(max = 480.dp).padding(horizontal = 24.dp, vertical = if (compact) 16.dp else 28.dp)) {
-                    BrandMark()
-                    Spacer(Modifier.height(if (compact) 18.dp else 30.dp))
-                    Text("Connect your workspace", fontSize = if (compact) 25.sp else 28.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(8.dp))
-                    Text("Choose the Kora server where your team works. You can change this before signing in.", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 22.sp)
-                    Spacer(Modifier.height(if (compact) 16.dp else 26.dp))
-                    KoraTextField(value = url, onValueChange = { value ->
-                        url = value
-                        Regex("/s/([^/?#]+)/?$").find(value.trim())?.groupValues?.get(1)?.let { site = it }
-                    }, modifier = Modifier.fillMaxWidth(), label = "Server URL", placeholder = { Text("https://api.kora.mradiafrica.com") }, singleLine = true,
-                        trailingIcon = if (url.isNotBlank()) ({
-                            IconButton(onClick = { url = "" }, modifier = Modifier.semantics { contentDescription = "Clear server URL" }) {
-                                Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
-                            }
-                        }) else null)
-                    Spacer(Modifier.height(12.dp))
-                    KoraTextField(value = site, onValueChange = { site = it }, modifier = Modifier.fillMaxWidth(), label = "Site ID *", placeholder = { Text("Your site ID") }, singleLine = true,
-                        trailingIcon = if (site.isNotBlank()) ({
-                            IconButton(onClick = { site = "" }, modifier = Modifier.semantics { contentDescription = "Clear site ID" }) {
-                                Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
-                            }
-                        }) else null)
-                    Spacer(Modifier.height(12.dp))
-                    state.message?.let { MessageBanner(it, state.offline); Spacer(Modifier.height(10.dp)) }
-                    Button(onClick = { onConnect(url, site.trim()) }, modifier = Modifier.fillMaxWidth().height(54.dp), enabled = !isBusy && url.isNotBlank() && site.isNotBlank(), shape = RoundedCornerShape(16.dp)) {
-                        if (isBusy) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary)
-                        else Text("Check server", fontWeight = FontWeight.SemiBold)
-                    }
-                    TextButton(onClick = { onNext(url, site.trim()) }, modifier = Modifier.fillMaxWidth(), enabled = !isBusy && url.isNotBlank() && site.isNotBlank()) { Text("Continue without checking") }
-                    Spacer(Modifier.height(6.dp))
-                    Text("Default server · ${com.kora.mobile.BuildConfig.DEFAULT_SERVER_URL}", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun LoginScreen(state: AppState, onBack: () -> Unit, onMagicLink: (String) -> Unit, onChangeServer: () -> Unit) {
-    var email by remember { mutableStateOf("") }
-    androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.fillMaxSize().imePadding(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 24.dp, vertical = 24.dp), verticalArrangement = Arrangement.Center) {
-      item {
-       Column(Modifier.fillMaxWidth().widthIn(max = 440.dp).padding(horizontal = 0.dp)) {
-        BrandMark()
-        Spacer(Modifier.height(38.dp))
-        Text("Welcome back", fontSize = 29.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(6.dp))
-        Text("Sign in to continue to your workspace", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(24.dp))
-        ServerPill(state.serverUrl, state.siteRef, onChangeServer)
-        Spacer(Modifier.height(22.dp))
-        KoraTextField(value = email, onValueChange = { email = it }, modifier = Modifier.fillMaxWidth(), label = "Email", singleLine = true)
-        Spacer(Modifier.height(12.dp))
-        state.message?.let { MessageBanner(it, false); Spacer(Modifier.height(10.dp)) }
-        Button(onClick = { onMagicLink(email.trim()) }, modifier = Modifier.fillMaxWidth().height(54.dp), enabled = !state.busy && email.isNotBlank(), shape = RoundedCornerShape(16.dp)) {
-            if (state.busy) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary)
-            else Text("Email me a sign-in link", fontWeight = FontWeight.SemiBold)
-        }
-        Spacer(Modifier.height(8.dp))
-        Text("The link opens this workspace on your device and can only be used once.", fontSize = 12.sp, lineHeight = 18.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-       }
-      }
-    }
-}
-
-@Composable
-internal fun ServerPill(url: String, site: String, onChange: () -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.secondary), shape = RoundedCornerShape(14.dp)) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Lock, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(9.dp))
-            Column(Modifier.weight(1f)) {
-                Text(url.removePrefix("https://").removePrefix("http://"), fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (site.isNotBlank()) Text("Site · $site", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            TextButton(onClick = onChange) { Text("Change") }
         }
     }
 }
