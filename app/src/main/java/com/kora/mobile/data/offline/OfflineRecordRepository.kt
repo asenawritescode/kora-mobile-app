@@ -15,6 +15,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+private val UNCERTAIN_STATUSES = setOf("sent", "accepted", "outcome_unknown")
+
 /** Durable E4 intents and module facts. Intents are never applied as local record mutations. */
 class OfflineRecordRepository(
     private val db: KoraDatabase,
@@ -68,10 +70,20 @@ class OfflineRecordRepository(
             if (!canSync(scope)) return@withLock SyncResult(acknowledged, KoraError("actor_changed", "Sign in again to sync this workspace", 401))
             var requestDispatched = false
             try {
-                val operation = catalog.operations.singleOrNull { it.operationRef == original.operationRef }
+                val published = catalog.operations.singleOrNull { it.operationRef == original.operationRef }
+                // An intent that may already have run is reconciled by its original key before any catalog check,
+                // so a catalog change can never strand an operation the Engine may have applied.
+                if (original.status in UNCERTAIN_STATUSES) {
+                    val recovered = remote.lookupIntent(scope, original.operationRef, original.idempotencyKey)
+                    if (recovered != null) {
+                        validateRecoveredReceipt(scope, catalog, original, published, recovered)
+                        if (recordReceipt(original, recovered)) acknowledged++
+                        continue
+                    }
+                }
+                val operation = published
                     ?: throw KoraError("catalog_revoked", "This action is no longer published. Your saved intent needs review.", 409)
-                if (catalog.revision != original.catalogRevision || operation.availability != "available" || !operation.offlineEligible ||
-                    original.inputSchema != JSONObject().put("id", operation.inputSchema.id).put("version", operation.inputSchema.version).toString()) {
+                if (!matchesCatalog(original, catalog, operation)) {
                     throw KoraError("catalog_changed", "The actor catalog changed. Review this saved intent before syncing.", 409)
                 }
                 if (!declaresOfflineOperation(capabilities, operation)) {
@@ -90,27 +102,10 @@ class OfflineRecordRepository(
                 // Persist sent before dispatch so process death only recovers this same intent/key.
                 val sent = original.copy(status = "sent", lastError = null)
                 dao.putIntent(sent)
-                val recoveredReceipt = if (original.status in setOf("sent", "accepted", "outcome_unknown")) {
-                    remote.lookupIntent(scope, original.operationRef, original.idempotencyKey)
-                        ?.also { validateReceipt(scope, catalog, operation, it) }
-                } else null
-                val resolved = recoveredReceipt ?: run {
-                    requestDispatched = true
-                    val result = remote.sendIntent(scope, wire)
-                    receiptFor(result, original.localOperationId).also { validateReceipt(scope, catalog, operation, it) }
-                }
-                val receipt = resolved
-                when (receipt.requiredString("status")) {
-                    "completed" -> {
-                        dao.putIntent(sent.copy(status = "applied", encryptedReceipt = encode(receipt), lastError = null))
-                        acknowledged++
-                    }
-                    "rejected", "failed" -> dao.putIntent(sent.copy(status = "rejected", encryptedReceipt = encode(receipt), lastError = receipt.optJSONObject("error")?.optString("message")))
-                    "conflict" -> dao.putIntent(sent.copy(status = "conflict", encryptedReceipt = encode(receipt), lastError = receipt.optJSONObject("error")?.optString("message")))
-                    "accepted", "running" -> dao.putIntent(sent.copy(status = "accepted", encryptedReceipt = encode(receipt), lastError = null))
-                    "outcome_unknown" -> dao.putIntent(sent.copy(status = "outcome_unknown", encryptedReceipt = encode(receipt), lastError = receipt.optJSONObject("error")?.optString("message")))
-                    else -> dao.putIntent(sent.copy(status = "blocked", encryptedReceipt = encode(receipt), lastError = "Engine returned an unsupported receipt state"))
-                }
+                requestDispatched = true
+                val result = remote.sendIntent(scope, wire)
+                val receipt = receiptFor(result, original.localOperationId).also { validateReceipt(scope, catalog, operation, it) }
+                if (recordReceipt(sent, receipt)) acknowledged++
             } catch (error: Exception) {
                 val kora = error as? KoraError
                 val status = when {
@@ -127,6 +122,33 @@ class OfflineRecordRepository(
             }
         }
         SyncResult(acknowledged, firstError)
+    }
+
+    private fun matchesCatalog(intent: OfflineIntentEntity, catalog: EngineApplicationCatalog, operation: EnginePublishedOperation) =
+        catalog.revision == intent.catalogRevision && operation.availability == "available" && operation.offlineEligible &&
+            intent.inputSchema == JSONObject().put("id", operation.inputSchema.id).put("version", operation.inputSchema.version).toString()
+
+    /** Stores the Engine's receipt as the intent outcome; returns true when the operation completed. */
+    private suspend fun recordReceipt(base: OfflineIntentEntity, receipt: JSONObject): Boolean {
+        val errorMessage = receipt.optJSONObject("error")?.optString("message")
+        val next = when (receipt.requiredString("status")) {
+            "completed" -> base.copy(status = "applied", lastError = null)
+            "rejected", "failed" -> base.copy(status = "rejected", lastError = errorMessage)
+            "conflict" -> base.copy(status = "conflict", lastError = errorMessage)
+            "accepted", "running" -> base.copy(status = "accepted", lastError = null)
+            "outcome_unknown" -> base.copy(status = "outcome_unknown", lastError = errorMessage)
+            else -> base.copy(status = "blocked", lastError = "Engine returned an unsupported receipt state")
+        }
+        dao.putIntent(next.copy(encryptedReceipt = encode(receipt)))
+        return next.status == "applied"
+    }
+
+    // A recovered receipt is the Engine's authoritative record of what already happened. Its identity must match,
+    // but its output is only checked against the current schema while the catalog is still the one it was sent under.
+    private suspend fun validateRecoveredReceipt(scope: Scope, catalog: EngineApplicationCatalog, intent: OfflineIntentEntity, operation: EnginePublishedOperation?, receipt: JSONObject) {
+        if (operation != null && matchesCatalog(intent, catalog, operation)) return validateReceipt(scope, catalog, operation, receipt)
+        val parsed = decoder.decodeOperationReceipt(receipt.toString())
+        require(parsed.operationRef == intent.operationRef && parsed.businessScope == scope.businessScope) { "Engine receipt does not match the intent scope" }
     }
 
     private suspend fun validateReceipt(scope: Scope, catalog: EngineApplicationCatalog, operation: EnginePublishedOperation, receipt: JSONObject) {
