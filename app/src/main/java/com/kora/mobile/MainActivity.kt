@@ -192,63 +192,6 @@ internal fun KoraApp(state: AppState, vm: AppViewModel) {
 }
 
 @Composable
-internal fun DashboardScreen(state: AppState, vm: AppViewModel) {
-    var query by remember { mutableStateOf("") }
-    val normalizedQuery = query.trim().lowercase()
-    val catalog = state.publishedCatalog
-    val modules = catalog?.modules.orEmpty().filter { module ->
-        normalizedQuery.isBlank() || module.id.lowercase().contains(normalizedQuery) || catalog?.queries?.any { it.ownerModuleId == module.id && it.name.lowercase().contains(normalizedQuery) } == true || catalog?.projections?.any { it.ownerModuleId == module.id && it.id.lowercase().contains(normalizedQuery) } == true
-    }
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item {
-            Spacer(Modifier.height(8.dp))
-            Text("Good to see you,", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(state.user?.fullName?.ifBlank { state.user.email } ?: "Your workspace", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-            Text("Pick up where your team left off.", modifier = Modifier.padding(top = 4.dp), color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        item {
-            Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerLow)) {
-                Column(Modifier.fillMaxWidth().padding(20.dp)) {
-                    Text("WORKSPACE", color = androidx.compose.material3.MaterialTheme.colorScheme.primary, fontSize = 11.sp, letterSpacing = 1.4.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(7.dp))
-                    Text("Your work, ready when you are.", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurface, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(14.dp))
-                    Button(onClick = { vm.selectSection("Work") }, shape = RoundedCornerShape(10.dp)) { Text("Browse published data"); Spacer(Modifier.width(8.dp)); Icon(Icons.Outlined.ArrowForward, null, Modifier.size(16.dp)) }
-                }
-            }
-        }
-        item {
-            KoraTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                placeholder = { Text("Search published modules and queries") }
-            )
-        }
-        item { SectionHeading(if (normalizedQuery.isBlank()) "Your modules" else "Search results", "${modules.size} published modules") }
-        if (catalog == null) item { EmptyCard("Published workspace unavailable", state.surfaceError ?: "Connect to load actor-authorized workspace surfaces.") }
-        else if (modules.isEmpty()) item { EmptyCard(if (normalizedQuery.isBlank()) "No published modules" else "No matches found", if (normalizedQuery.isBlank()) "No module surfaces are available in this business scope." else "Try another module or query name.") }
-        items(modules, key = { it.id }) { module ->
-            val queries = catalog?.queries?.filter { it.ownerModuleId == module.id }.orEmpty()
-            val projections = catalog?.projections?.filter { it.ownerModuleId == module.id }.orEmpty()
-            val operations = catalog?.operations?.filter { it.ownerModuleId == module.id }.orEmpty()
-            ModuleCard(module.id, queries.size + projections.size + operations.size, (queries.map { it.presentation.optString("title").ifBlank { it.name } } + projections.map { it.id } + operations.map { it.presentation.optString("title").ifBlank { it.operationRef } }).take(3)) { vm.selectSection("Work") }
-        }
-        if (normalizedQuery.isNotBlank()) {
-            catalog?.queries?.filter { it.name.contains(normalizedQuery, true) || it.ownerModuleId.contains(normalizedQuery, true) }?.forEach { item ->
-                item { PublishedSurfaceRow(item.presentation.optString("title").ifBlank { item.name }, "Query · ${item.ownerModuleId}") { vm.openPublishedQuery(item) } }
-            }
-            catalog?.projections?.filter { it.id.contains(normalizedQuery, true) || it.ownerModuleId.contains(normalizedQuery, true) }?.forEach { item ->
-                item { PublishedSurfaceRow(item.id, "Historical view · ${item.ownerModuleId}") { vm.openPublishedProjection(item) } }
-            }
-        }
-        item { Spacer(Modifier.height(8.dp)) }
-    }
-}
-
-@Composable
 internal fun WorkScreen(state: AppState, vm: AppViewModel) {
     val catalog = state.publishedCatalog
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
