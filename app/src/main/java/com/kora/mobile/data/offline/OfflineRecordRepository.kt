@@ -80,6 +80,9 @@ class OfflineRecordRepository(
                         if (recordReceipt(original, recovered)) acknowledged++
                         continue
                     }
+                    if (published == null || !matchesCatalog(original, catalog, published)) {
+                        throw KoraError("intent_needs_review", "Engine has no record of this saved action and the published catalog changed. Review it before sending it again.", 409)
+                    }
                 }
                 val operation = published
                     ?: throw KoraError("catalog_revoked", "This action is no longer published. Your saved intent needs review.", 409)

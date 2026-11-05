@@ -339,6 +339,54 @@ class OfflineRecordRepositoryTest {
         }
     }
 
+    @Test fun uncertainIntentWithoutReceiptAfterCatalogChangeNeedsReviewAndIsNotResent() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sends = AtomicInteger()
+        val lookups = AtomicInteger()
+        val server = ServerSocket().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
+        val thread = Thread {
+            while (!server.isClosed) runCatching {
+                server.accept().use { socket ->
+                    val request = readRequest(socket.getInputStream())
+                    when (URI(request.first).path.removePrefix("/s/site")) {
+                        "/api/v2/offline/capabilities" -> respond(socket, capabilitiesJson(revision = 5))
+                        "/api/v2/module-executions/lookup" -> {
+                            lookups.incrementAndGet()
+                            respondError(socket, "module.operation_receipt_not_found", 404)
+                        }
+                        "/api/v2/offline/intents" -> {
+                            sends.incrementAndGet()
+                            respond(socket, JSONObject().put("receipts", org.json.JSONArray()))
+                        }
+                        else -> respondError(socket, "not_found", 404)
+                    }
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        val db = Room.inMemoryDatabaseBuilder(context, KoraDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val scope = Scope("i", "http://127.0.0.1:${server.localPort}", "site", "alice", BusinessScope("tenant-a"))
+            val repo = repository(context, db)
+            val original = catalog(4)
+            val id = repo.enqueue(scope, original, original.operations.single(), JSONObject().put("amount", 3), "no-receipt-key")
+            db.localDao.intent(scope.key, id)?.let { db.localDao.putIntent(it.copy(status = "outcome_unknown")) }
+
+            val result = repo.sync(scope, catalog(5))
+
+            assertEquals("intent_needs_review", (result.error as? com.kora.mobile.domain.model.KoraError)?.code)
+            assertEquals("blocked", db.localDao.intent(scope.key, id)?.status)
+            assertEquals(1, lookups.get())
+            assertEquals(0, sends.get())
+            repo.sync(scope, catalog(5))
+            assertEquals(1, lookups.get())
+            assertEquals(0, sends.get())
+        } finally {
+            db.close()
+            server.close()
+            thread.join(1000)
+        }
+    }
+
     @Test fun revokedOperationOrSchemaBlocksSavedIntentWithoutDispatch() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val sends = AtomicInteger()
