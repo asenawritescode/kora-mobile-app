@@ -1141,12 +1141,6 @@ internal fun RecordDetailScreen(state: AppState, vm: AppViewModel) {
     }
 }
 
-internal fun formatCurrency(value: Any?): String {
-    val number = value?.toString()?.toDoubleOrNull() ?: return value?.toString() ?: "—"
-    val formatted = java.text.NumberFormat.getNumberInstance(java.util.Locale("en", "KE")).format(number)
-    return "KES $formatted"
-}
-
 internal data class MobileReportMetric(val label: String, val value: String)
 internal data class MobileReportChart(val title: String, val rows: JSONArray, val indexField: String, val seriesField: String, val mode: String, val format: String = "number")
 
@@ -1724,16 +1718,3 @@ internal fun SyncScreen(state: AppState, vm: AppViewModel) {
     }
 }
 
-internal fun formatHumanDate(value: String, dateOnly: Boolean): String = runCatching {
-    val locale = Locale.getDefault()
-    if (dateOnly) {
-        LocalDate.parse(value.take(10)).format(DateTimeFormatter.ofPattern("MMM d, yyyy", locale))
-    } else {
-        val instant = runCatching { Instant.parse(value) }.getOrElse {
-            runCatching { OffsetDateTime.parse(value).toInstant() }.getOrElse {
-                LocalDateTime.parse(value.replace(' ', 'T')).atZone(ZoneId.systemDefault()).toInstant()
-            }
-        }
-        DateTimeFormatter.ofPattern("MMM d, yyyy HH:mm", locale).withZone(ZoneId.systemDefault()).format(instant)
-    }
-}.getOrDefault(value)
