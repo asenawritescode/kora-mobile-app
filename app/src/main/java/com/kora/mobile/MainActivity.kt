@@ -242,17 +242,6 @@ internal fun ServerSetup(state: AppState, onNext: (String, String) -> Unit, onCo
 }
 
 @Composable
-internal fun BrandMark() {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(46.dp).background(androidx.compose.material3.MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) {
-            Text("K", color = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.width(12.dp))
-        Column { Text("Kora", fontSize = 23.sp, fontWeight = FontWeight.Bold); Text("WORKSPACE", fontSize = 10.sp, letterSpacing = 1.8.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.primary) }
-    }
-}
-
-@Composable
 internal fun LoginScreen(state: AppState, onBack: () -> Unit, onMagicLink: (String) -> Unit, onChangeServer: () -> Unit) {
     var email by remember { mutableStateOf("") }
     androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.fillMaxSize().imePadding(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 24.dp, vertical = 24.dp), verticalArrangement = Arrangement.Center) {
@@ -1732,60 +1721,6 @@ internal fun SyncScreen(state: AppState, vm: AppViewModel) {
         }
         if (state.message != null) item { MessageBanner(state.message, state.offline && state.message.contains("waiting", true)) }
         item { OutlinedButton(onClick = { vm.logout() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Outlined.Logout, null); Spacer(Modifier.width(8.dp)); Text("Sign out") } }
-    }
-}
-
-@Composable
-internal fun DocTypeRow(item: DocTypeNavItem, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, androidx.compose.material3.MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f))) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(38.dp).background(androidx.compose.material3.MaterialTheme.colorScheme.secondary, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Inventory2, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp)) }
-            Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(item.label, fontWeight = FontWeight.Medium); if (item.name != item.label) Text(item.name, fontSize = 11.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
-            Icon(Icons.Outlined.ChevronRight, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
-internal fun ModuleCard(title: String, count: Int, previews: List<String>, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, androidx.compose.material3.MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f))) {
-        Column(Modifier.padding(17.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(40.dp).background(androidx.compose.material3.MaterialTheme.colorScheme.secondary, RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Inventory2, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary) }
-                Spacer(Modifier.width(11.dp)); Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.SemiBold); Text("$count published surfaces", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
-                Icon(Icons.Outlined.ChevronRight, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (previews.isNotEmpty()) { Spacer(Modifier.height(14.dp)); Divider(color = androidx.compose.material3.MaterialTheme.colorScheme.outline.copy(alpha = .55f)); Spacer(Modifier.height(10.dp)); Text(previews.joinToString("   ·   "), fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-        }
-    }
-}
-
-@Composable
-internal fun SectionHeading(title: String, detail: String) {
-    Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { Text(title, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, modifier = Modifier.weight(1f)); Text(detail, fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
-}
-
-@Composable
-internal fun InfoRow(icon: ImageVector, title: String, detail: String) {
-    Card(shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary); Spacer(Modifier.width(10.dp)); Column { Text(title, fontWeight = FontWeight.Medium); Text(detail, fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) } } }
-}
-
-internal fun isPassiveConnectionMessage(message: String): Boolean =
-    message.startsWith("Offline ·") || message.contains("waiting to sync", ignoreCase = true)
-
-@Composable
-internal fun MessageBanner(message: String, warning: Boolean) {
-    val color = if (warning) androidx.compose.material3.MaterialTheme.colorScheme.error else androidx.compose.material3.MaterialTheme.colorScheme.primary
-    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = color.copy(alpha = .08f)), shape = RoundedCornerShape(13.dp)) { Text(message, Modifier.padding(13.dp), color = color, fontSize = 13.sp) }
-}
-
-@Composable
-internal fun EmptyCard(title: String, detail: String) {
-    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(12.dp)) {
-        Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(Modifier.size(44.dp).background(androidx.compose.material3.MaterialTheme.colorScheme.secondary, CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Inventory2, null, tint = androidx.compose.material3.MaterialTheme.colorScheme.primary) }
-            Spacer(Modifier.height(10.dp)); Text(title, fontWeight = FontWeight.SemiBold); Spacer(Modifier.height(4.dp)); Text(detail, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, lineHeight = 19.sp)
-        }
     }
 }
 
