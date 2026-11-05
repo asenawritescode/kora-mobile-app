@@ -107,6 +107,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -158,6 +159,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             val vm: AppViewModel = viewModel(factory = factory)
+            LaunchedEffect(intent?.dataString) { vm.acceptMagicLink(intent?.data) }
             val state by vm.state.collectAsState()
             KoraTheme(
                 primaryColor = state.tenantBranding?.primaryColor ?: state.navigation?.branding?.primaryColor,
@@ -168,6 +170,12 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        ViewModelProvider(this, factory)[AppViewModel::class.java].acceptMagicLink(intent.data)
+    }
 }
 
 @Composable
@@ -175,7 +183,7 @@ private fun KoraApp(state: AppState, vm: AppViewModel) {
     Surface(modifier = Modifier.fillMaxSize(), color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
         when (state.stage) {
             AppStage.SERVER -> ServerSetup(state, onNext = vm::goToLogin, onConnect = vm::connect)
-            AppStage.LOGIN -> LoginScreen(state, onBack = { vm.logout() }, onSubmit = { email, password -> vm.signIn(email, password) }, onChangeServer = { vm.logout() })
+            AppStage.LOGIN -> LoginScreen(state, onBack = { vm.logout() }, onMagicLink = vm::requestMagicLink, onChangeServer = { vm.logout() })
             AppStage.WORKSPACE -> WorkspaceShell(state, vm)
         }
     }
@@ -204,9 +212,19 @@ private fun ServerSetup(state: AppState, onNext: (String, String) -> Unit, onCon
                     KoraTextField(value = url, onValueChange = { value ->
                         url = value
                         Regex("/s/([^/?#]+)/?$").find(value.trim())?.groupValues?.get(1)?.let { site = it }
-                    }, modifier = Modifier.fillMaxWidth(), label = "Server URL", placeholder = { Text("https://api.kora.mradiafrica.com") }, singleLine = true)
+                    }, modifier = Modifier.fillMaxWidth(), label = "Server URL", placeholder = { Text("https://api.kora.mradiafrica.com") }, singleLine = true,
+                        trailingIcon = if (url.isNotBlank()) ({
+                            IconButton(onClick = { url = "" }, modifier = Modifier.semantics { contentDescription = "Clear server URL" }) {
+                                Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                            }
+                        }) else null)
                     Spacer(Modifier.height(12.dp))
-                    KoraTextField(value = site, onValueChange = { site = it }, modifier = Modifier.fillMaxWidth(), label = "Site ID *", placeholder = { Text("Your site ID") }, singleLine = true)
+                    KoraTextField(value = site, onValueChange = { site = it }, modifier = Modifier.fillMaxWidth(), label = "Site ID *", placeholder = { Text("Your site ID") }, singleLine = true,
+                        trailingIcon = if (site.isNotBlank()) ({
+                            IconButton(onClick = { site = "" }, modifier = Modifier.semantics { contentDescription = "Clear site ID" }) {
+                                Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                            }
+                        }) else null)
                     Spacer(Modifier.height(12.dp))
                     state.message?.let { MessageBanner(it, state.offline); Spacer(Modifier.height(10.dp)) }
                     Button(onClick = { onConnect(url, site.trim()) }, modifier = Modifier.fillMaxWidth().height(54.dp), enabled = !isBusy && url.isNotBlank() && site.isNotBlank(), shape = RoundedCornerShape(16.dp)) {
@@ -234,10 +252,8 @@ private fun BrandMark() {
 }
 
 @Composable
-private fun LoginScreen(state: AppState, onBack: () -> Unit, onSubmit: (String, String) -> Unit, onChangeServer: () -> Unit) {
+private fun LoginScreen(state: AppState, onBack: () -> Unit, onMagicLink: (String) -> Unit, onChangeServer: () -> Unit) {
     var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var showPassword by remember { mutableStateOf(false) }
     androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.fillMaxSize().imePadding(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 24.dp, vertical = 24.dp), verticalArrangement = Arrangement.Center) {
       item {
        Column(Modifier.fillMaxWidth().widthIn(max = 440.dp).padding(horizontal = 0.dp)) {
@@ -251,31 +267,13 @@ private fun LoginScreen(state: AppState, onBack: () -> Unit, onSubmit: (String, 
         Spacer(Modifier.height(22.dp))
         KoraTextField(value = email, onValueChange = { email = it }, modifier = Modifier.fillMaxWidth(), label = "Email", singleLine = true)
         Spacer(Modifier.height(12.dp))
-        KoraTextField(
-            value = password,
-            onValueChange = { password = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = "Password",
-            visualTransformation = if (showPassword) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            trailingIcon = {
-                IconButton(onClick = { showPassword = !showPassword }) {
-                    Icon(
-                        imageVector = if (showPassword) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                        contentDescription = if (showPassword) "Hide password" else "Show password",
-                    )
-                }
-            },
-            singleLine = true,
-        )
-        Spacer(Modifier.height(14.dp))
         state.message?.let { MessageBanner(it, false); Spacer(Modifier.height(10.dp)) }
-        Button(onClick = { onSubmit(email.trim(), password) }, modifier = Modifier.fillMaxWidth().height(54.dp), enabled = !state.busy && email.isNotBlank() && password.isNotBlank(), shape = RoundedCornerShape(16.dp)) {
+        Button(onClick = { onMagicLink(email.trim()) }, modifier = Modifier.fillMaxWidth().height(54.dp), enabled = !state.busy && email.isNotBlank(), shape = RoundedCornerShape(16.dp)) {
             if (state.busy) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary)
-            else Text("Sign in", fontWeight = FontWeight.SemiBold)
+            else Text("Email me a sign-in link", fontWeight = FontWeight.SemiBold)
         }
-        Spacer(Modifier.height(12.dp))
-        Text("Sign in with your Kora account. Need a magic link? Open it on this device to continue.", fontSize = 12.sp, lineHeight = 18.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        Text("The link opens this workspace on your device and can only be used once.", fontSize = 12.sp, lineHeight = 18.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
        }
       }
     }
@@ -326,7 +324,10 @@ private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
             } else {
                 TopAppBar(
                     title = { Column { Text(if (state.section in setOf("Reports", "Requests", "Sync")) state.section else "Kora", fontWeight = FontWeight.Bold); Text(state.navigation?.branding?.appName ?: "Workspace", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) } },
-                    actions = { IconButton(onClick = { vm.selectSection("Sync") }) { if (state.offline) Icon(Icons.Filled.CloudOff, "Offline. Open sync", tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) else Icon(Icons.Outlined.CloudDone, "Connected. Open sync", tint = androidx.compose.material3.MaterialTheme.colorScheme.primary) } },
+                    actions = {
+                        ScopePicker(state, vm)
+                        IconButton(onClick = { vm.selectSection("Sync") }) { if (state.offline) Icon(Icons.Filled.CloudOff, "Offline. Open sync", tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) else Icon(Icons.Outlined.CloudDone, "Connected. Open sync", tint = androidx.compose.material3.MaterialTheme.colorScheme.primary) }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.background),
                 )
             }
@@ -353,9 +354,31 @@ private fun WorkspaceShell(state: AppState, vm: AppViewModel) {
                 state.section == "Home" -> DashboardScreen(state, vm)
                 state.section == "Work" -> WorkScreen(state, vm)
                 state.section == "POS" -> PointOfSaleScreen(state, vm)
-                state.section == "Requests" -> RequestsScreen(state)
+                state.section == "Requests" -> RequestsScreen(state, vm)
                 state.section == "Reports" -> ReportsScreen(state, vm)
                 else -> SyncScreen(state, vm)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScopePicker(state: AppState, vm: AppViewModel) {
+    val catalog = state.publishedCatalog ?: return
+    if (state.availableEntityChoices.isEmpty()) return
+    var expanded by remember { mutableStateOf(false) }
+    val current = catalog.businessScope
+    Box {
+        TextButton(onClick = { expanded = true }, modifier = Modifier.semantics { contentDescription = "Scope selector" }) {
+            Text(if (current.kind == "legal_entity") current.legalEntityId ?: "Legal entity" else "Tenant", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Icon(Icons.Filled.ArrowDropDown, null)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            state.availableEntityChoices.forEach { choice ->
+                DropdownMenuItem(
+                    text = { Text("Legal entity ${choice.legalEntityId}") },
+                    onClick = { expanded = false; vm.switchBusinessScope(choice) },
+                )
             }
         }
     }
@@ -718,11 +741,52 @@ private fun PublishedRowDetail(row: JSONObject) {
 @Composable
 private fun PublishedOperationDetail(state: AppState, vm: AppViewModel) {
     val operation = state.selectedPublishedOperation ?: return
+    val inputSchema = state.publishedCatalog?.schemas?.singleOrNull { it.ref == operation.inputSchema }?.schema
+    val properties = inputSchema?.optJSONObject("properties")
+    val required = inputSchema?.optJSONArray("required")?.let { array -> (0 until array.length()).map { array.optString(it) }.toSet() }.orEmpty()
+    var formValues by remember(operation.operationRef) { mutableStateOf(emptyMap<String, String>()) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(operation.presentation.optString("description").ifBlank { "Engine validates this action against its published input schema and current permissions." }, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Input schema ${operation.inputSchema.id} v${operation.inputSchema.version}", style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
-        OutlinedTextField(value = state.operationInput, onValueChange = vm::setOperationInput, enabled = !state.operationMayHaveRun, label = { Text("Action input JSON") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
-        Button(onClick = { vm.executePublishedOperation(operation) }, enabled = operation.availability == "available" && !state.surfaceLoading, modifier = Modifier.fillMaxWidth()) { Text(if (state.surfaceLoading) "Submitting…" else "Submit action") }
+        if (properties != null && properties.length() > 0) {
+            val names = properties.keys().asSequence().toList()
+            names.forEach { name ->
+                val definition = properties.optJSONObject(name) ?: JSONObject()
+                val label = definition.optString("title").ifBlank { name.replace('_', ' ').replaceFirstChar { it.uppercase() } } + if (name in required) " *" else ""
+                val value = formValues[name].orEmpty()
+                val enumValues = definition.optJSONArray("enum")?.let { values -> (0 until values.length()).map { values.optString(it) } }.orEmpty()
+                when {
+                    enumValues.isNotEmpty() -> ChoiceField(label, value, "Choose ${label.removeSuffix(" *").lowercase()}", enumValues, true, !state.operationMayHaveRun) { selected ->
+                        formValues = formValues + (name to selected)
+                        vm.setOperationInput(operationFormJson(formValues + (name to selected), properties))
+                    }
+                    definition.optString("type") == "boolean" -> Row(Modifier.fillMaxWidth().clickable(enabled = !state.operationMayHaveRun) {
+                        val selected = if (value == "true") "false" else "true"
+                        formValues = formValues + (name to selected)
+                        vm.setOperationInput(operationFormJson(formValues + (name to selected), properties))
+                    }, verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(value == "true", null, enabled = !state.operationMayHaveRun)
+                        Text(label)
+                    }
+                    else -> KoraTextField(
+                        value = value,
+                        onValueChange = { typed ->
+                            formValues = formValues + (name to typed)
+                            vm.setOperationInput(operationFormJson(formValues + (name to typed), properties))
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !state.operationMayHaveRun,
+                        label = label,
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = if (definition.optString("type") in setOf("number", "integer")) KeyboardType.Decimal else KeyboardType.Text),
+                    )
+                }
+                definition.optString("description").takeIf(String::isNotBlank)?.let { Text(it, fontSize = 11.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+        } else {
+            OutlinedTextField(value = state.operationInput, onValueChange = vm::setOperationInput, enabled = !state.operationMayHaveRun, label = { Text("Action input JSON") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
+        }
+        Button(onClick = { vm.executePublishedOperation(operation) }, enabled = operation.availability == "available" && !state.surfaceLoading, modifier = Modifier.fillMaxWidth()) { Text(if (state.surfaceLoading) "Submitting…" else if (operation.offlineEligible) "Submit or save offline" else "Submit action") }
         if (state.operationMayHaveRun) OutlinedButton(onClick = vm::recoverPublishedOperation, enabled = !state.surfaceLoading, modifier = Modifier.fillMaxWidth()) { Text("Check operation receipt") }
         state.surfaceError?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
         state.operationReceipt?.let { receipt ->
@@ -735,6 +799,22 @@ private fun PublishedOperationDetail(state: AppState, vm: AppViewModel) {
         }
         if (state.operationReceipt != null && !state.operationMayHaveRun) OutlinedButton(onClick = vm::startNewPublishedOperation, modifier = Modifier.fillMaxWidth()) { Text("Start another action") }
     }
+}
+
+private fun operationFormJson(values: Map<String, String>, properties: JSONObject): String {
+    val payload = JSONObject()
+    values.forEach { (name, raw) ->
+        if (raw.isBlank()) return@forEach
+        val type = properties.optJSONObject(name)?.optString("type")
+        val value: Any = when (type) {
+            "boolean" -> raw == "true"
+            "integer" -> raw.toLongOrNull() ?: raw
+            "number" -> raw.toDoubleOrNull() ?: raw
+            else -> raw
+        }
+        payload.put(name, value)
+    }
+    return payload.toString()
 }
 
 @Composable
@@ -1897,9 +1977,10 @@ private fun fieldTruthy(value: Any?): Boolean = when (value) {
 }
 
 @Composable
-private fun RequestsScreen(state: AppState) {
+private fun RequestsScreen(state: AppState, vm: AppViewModel) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Spacer(Modifier.height(8.dp)); SectionHeading("Requests", "Needs action") }
+        item { OutlinedButton(onClick = vm::refreshRequests, enabled = !state.workflowBusy, modifier = Modifier.fillMaxWidth()) { Text("Refresh status") } }
         if (state.requests.isEmpty()) item { EmptyCard("Nothing needs your attention", if (state.offline) "No cached requests are available. Reconnect to refresh." else "Requests assigned to you will show up here.") }
         items(state.requests) { request ->
             val title = request.optString("title", "Request")
@@ -1909,6 +1990,64 @@ private fun RequestsScreen(state: AppState) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(status.replace('_', ' '), color = androidx.compose.material3.MaterialTheme.colorScheme.primary, fontSize = 11.sp) }
                     if (message.isNotBlank()) Text(message, Modifier.padding(top = 5.dp), color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    val assignments = request.optJSONArray("assignments")
+                    val assignment = assignments?.let { rows -> (0 until rows.length()).mapNotNull(rows::optJSONObject).firstOrNull { it.optString("status") == "pending" } }
+                    val responses = request.optJSONArray("allowed_responses")
+                    if (assignment != null && responses != null && responses.length() > 0) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 10.dp)) {
+                            (0 until responses.length()).forEach { index ->
+                                val answer = responses.optString(index)
+                                if (answer == "provide_information") Text("Information response requires its published schema form.", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                                else OutlinedButton(onClick = { vm.respondToRequest(request, answer) }, enabled = !state.workflowBusy) { Text(answer.replace('_', ' ').replaceFirstChar { it.uppercase() }) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        item { SectionHeading("Workflow status", "Recent activity") }
+        item { OutlinedButton(onClick = vm::refreshWorkflowDefinitions, enabled = !state.workflowBusy, modifier = Modifier.fillMaxWidth()) { Text("Load available workflows") } }
+        if (state.workflowError != null) item { MessageBanner(state.workflowError, state.offline) }
+        items(state.workflowDefinitions, key = { "definition:${it.id}:${it.version}" }) { definition ->
+            var subjectId by rememberSaveable(definition.id, definition.version) { mutableStateOf("") }
+            var startKey by rememberSaveable(definition.id, definition.version, subjectId) { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text(definition.id, fontWeight = FontWeight.SemiBold)
+                    Text("v${definition.version} · ${definition.digest.take(12)}", fontSize = 11.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(subjectId, { subjectId = it }, label = { Text("Subject ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedButton(onClick = { vm.startWorkflow(definition, "record", subjectId.trim(), startKey) { startKey = java.util.UUID.randomUUID().toString() } }, enabled = !state.workflowBusy && subjectId.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start workflow") }
+                }
+            }
+        }
+        if (state.workflowInstances.isEmpty()) item { EmptyCard("No recent workflows", "Workflow status will appear here when this workspace has activity.") }
+        items(state.workflowInstances, key = { it.id }) { workflow ->
+            var reason by remember(workflow.id) { mutableStateOf("") }
+            var evidence by remember(workflow.id) { mutableStateOf("") }
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text(workflow.definitionId, Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(workflow.status.replace('_', ' '), color = androidx.compose.material3.MaterialTheme.colorScheme.primary, fontSize = 11.sp) }
+                    Text("${workflow.currentStep} · ${workflow.subjectType} ${workflow.subjectId}", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    if (workflow.status == "outcome_unknown") Text("Outcome needs review. Reconcile it with the workflow owner before retrying.", color = androidx.compose.material3.MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                    if (workflow.status in setOf("waiting", "retrying", "outcome_unknown")) Text("Check the workflow history before taking another action.", color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    OutlinedButton(onClick = { vm.loadWorkflowHistory(workflow.id) }) { Text("Load history") }
+                    state.workflowHistory[workflow.id].orEmpty().forEach { event ->
+                        Text("${event.optString("step_id")} · ${event.optString("kind")} · ${event.optString("status")}", fontSize = 11.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (event.optString("detail").isNotBlank()) Text(event.optString("detail"), fontSize = 11.sp)
+                    }
+                    if (workflow.status == "outcome_unknown") {
+                        OutlinedTextField(evidence, { evidence = it }, label = { Text("Evidence reference") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(reason, { reason = it }, label = { Text("Reconciliation reason") }, modifier = Modifier.fillMaxWidth())
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("confirmed_succeeded", "confirmed_not_applied", "abandon").forEach { outcome ->
+                                OutlinedButton(onClick = { vm.reconcileWorkflow(workflow.id, workflow.currentStep, outcome, evidence.trim(), reason.trim()) }, enabled = !state.workflowBusy && reason.isNotBlank() && evidence.isNotBlank()) { Text(outcome.removePrefix("confirmed_").replace('_', ' '), fontSize = 10.sp) }
+                            }
+                        }
+                    }
+                    if (workflow.status in setOf("ready", "running", "waiting", "retrying")) {
+                        OutlinedTextField(reason, { reason = it }, label = { Text("Cancellation reason") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedButton(onClick = { vm.cancelWorkflow(workflow.id, reason.trim()) }, enabled = !state.workflowBusy && reason.isNotBlank()) { Text("Cancel workflow") }
+                    }
                 }
             }
         }
@@ -1922,8 +2061,21 @@ private fun SyncScreen(state: AppState, vm: AppViewModel) {
         item {
             EmptyCard(
                 if (state.offline) "Reconnect to Kora" else "Published workspace is online",
-                "This client needs a connection to load published data and submit business actions.",
+                "Saved actions stay scoped to this signed-in actor and are only complete when Engine returns a completed receipt.",
             )
+        }
+        if (state.offlineIntents.isNotEmpty()) {
+            item { SectionHeading("Saved actions", "${state.offlineIntents.size} total") }
+            items(state.offlineIntents, key = { it.localOperationId }) { intent ->
+                Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, androidx.compose.material3.MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f))) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(intent.operationRef, fontWeight = FontWeight.SemiBold)
+                        Text(intent.status.replace('_', ' ').replaceFirstChar { it.uppercase() }, color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
+                        intent.lastError?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
+                    }
+                }
+            }
+            item { OutlinedButton(onClick = vm::syncOfflineIntents, enabled = !state.offline && !state.busy, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Filled.Sync, null); Spacer(Modifier.width(8.dp)); Text("Check saved actions") } }
         }
         if (state.message != null) item { MessageBanner(state.message, state.offline && state.message.contains("waiting", true)) }
         item { OutlinedButton(onClick = { vm.logout() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Outlined.Logout, null); Spacer(Modifier.width(8.dp)); Text("Sign out") } }

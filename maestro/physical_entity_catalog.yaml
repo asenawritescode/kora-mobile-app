@@ -1,0 +1,10 @@
+appId: com.kora.mobile
+---
+- launchApp
+- assertVisible: "Good to see you,"
+- tapOn: "Browse"
+- extendedWaitUntil:
+    visible: "Published workspace"
+    timeout: 30000
+- assertVisible: "finance.ar"
+- assertVisible: "sales.orders"

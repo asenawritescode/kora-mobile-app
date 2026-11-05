@@ -1,514 +1,377 @@
 package com.kora.mobile.data.offline
 
 import androidx.room.withTransaction
-import com.kora.mobile.core.database.*
+import com.kora.mobile.core.contracts.*
+import com.kora.mobile.core.database.KoraDatabase
+import com.kora.mobile.core.database.OfflineFactEntity
+import com.kora.mobile.core.database.OfflineIntentEntity
+import com.kora.mobile.core.database.OfflineCheckpointEntity
 import com.kora.mobile.core.security.PayloadCipher
 import com.kora.mobile.domain.model.KoraError
 import com.kora.mobile.domain.model.Scope
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-/** UI reads only these rows. Network responses update their baseline, never the UI directly. */
+/** Durable E4 intents and module facts. Intents are never applied as local record mutations. */
 class OfflineRecordRepository(
     private val db: KoraDatabase,
     private val cipher: PayloadCipher,
-    private val remote: RecordRemoteDataSource,
-    private val now: () -> Long = System::currentTimeMillis,
+    private val remote: RestRecordDataSource,
+    private val decoder: EngineContractDecoder,
     private val canSync: (Scope) -> Boolean = { true },
-) : RecordRepository, SyncCoordinator {
+) {
     private val dao = db.localDao
     private val syncMutex = Mutex()
-    private val refreshMutex = Mutex()
-    private val pullMutex = Mutex()
-    private val bootstrapMutex = Mutex()
+    private val lastCatalogs = java.util.concurrent.ConcurrentHashMap<String, EngineApplicationCatalog>()
+    private fun encode(value: Any) = cipher.encrypt(value.toString())
+    private fun decodeObject(value: String) = cipher.decrypt(value)?.let(::JSONObject)
+        ?: throw IllegalStateException("Saved offline data could not be decrypted")
 
-    private fun decode(value: String): JSONObject = cipher.decrypt(value)?.let(::JSONObject)
-        ?: throw IllegalStateException("Saved data could not be decrypted. It has been kept on this device.")
-    private fun encode(value: JSONObject) = cipher.encrypt(value.toString())
-    private fun revision(value: JSONObject): String? = value.optString("_version").ifBlank { value.optString("modified") }.takeIf { it.isNotBlank() && it != "null" }
-    private fun target(operation: LocalMutation, record: LocalRecord) = operation.localId == record.localId || (operation.localId == null && operation.doctype == record.doctype && (record.localId == "local:${operation.id}" || operation.recordName != null && operation.recordName == record.serverId))
-    private fun merged(base: JSONObject, patch: JSONObject): JSONObject = JSONObject(base.toString()).apply { patch.keys().forEach { put(it, patch.opt(it)) } }
+    fun rememberCatalog(scope: Scope, catalog: EngineApplicationCatalog) { lastCatalogs[scope.key] = catalog }
 
-    private suspend fun render(record: LocalRecord): JSONObject {
-        val pending = dao.queuedMutations(record.scopeKey).filter { target(it, record) }
-        return decode(record.encryptedPayload).put("name", record.serverId ?: record.localId)
-            .put("_local_id", record.localId)
-            .put("_sync_status", pending.firstOrNull { it.status in setOf("conflict", "rejected", "blocked") }?.status ?: if (pending.isEmpty()) "clean" else "pending")
-    }
-
-    override fun observeRecords(scope: Scope, doctype: String): Flow<List<JSONObject>> = combine(dao.observeRecords(scope.key, doctype), dao.observeMutations(scope.key)) { rows, _ -> rows.map { render(it) } }
-
-    override suspend fun records(scope: Scope, doctype: String): JSONArray {
-        importLegacy(scope, doctype)
-        return JSONArray(dao.records(scope.key, doctype).map { render(it) })
-    }
-
-    override suspend fun record(scope: Scope, doctype: String, name: String): JSONObject? {
-        importLegacy(scope, doctype)
-        return dao.record(scope.key, doctype, name)?.let { render(it) }
-    }
-
-    /** Import cached records and old queued writes without changing their retry identities. */
-    private suspend fun importLegacy(scope: Scope, doctype: String) = db.withTransaction {
-        val marker = "records-imported:$doctype"
-        if (dao.getEntry(scope.key, marker) != null) return@withTransaction
-        dao.getEntry(scope.key, "records:$doctype")?.let { entry ->
-            val raw = cipher.decrypt(entry.encryptedPayload) ?: throw IllegalStateException("Saved records could not be decrypted")
-            val parsed = org.json.JSONTokener(raw).nextValue()
-            val rows = if (parsed is JSONArray) parsed else (parsed as? JSONObject)?.optJSONArray("items") ?: JSONArray()
-            for (i in 0 until rows.length()) rows.optJSONObject(i)?.let { upsertServer(scope, doctype, it) }
-        }
-        for (mutation in dao.queuedMutations(scope.key).filter { it.doctype == doctype && it.localId == null }) {
-            val old = mutation.recordName?.let { dao.record(scope.key, doctype, it) }
-            val id = old?.localId ?: "local:${mutation.id}"
-            val data = merged(old?.let { decode(it.encryptedPayload) } ?: JSONObject(), decode(mutation.encryptedPayload))
-            dao.putRecord(LocalRecord(scope.key, doctype, id, mutation.recordName, encode(data), old?.encryptedServerPayload, old?.serverRevision, mutation.createdAt))
-            // Do not change localId on legacy operations: the transport must retain its original request shape.
-        }
-        dao.putEntry(LocalEntry(scope.key, marker, cipher.encrypt("true"), now(), "migration"))
-    }
-
-    override suspend fun save(scope: Scope, doctype: String, name: String?, payload: JSONObject, idempotencyKey: String, displayName: String?, draftId: String?): String {
-        importLegacy(scope, doctype)
-        return db.withTransaction {
-            val existing = name?.let { dao.record(scope.key, doctype, it) }
-            val localId = existing?.localId ?: "local:${UUID.randomUUID()}"
-            val serverId = existing?.serverId ?: name?.takeUnless { it.startsWith("local:") }
-            val clean = stripLocalMetadata(payload)
-            val record = LocalRecord(scope.key, doctype, localId, serverId,
-                encode(merged(existing?.let { decode(it.encryptedPayload) } ?: JSONObject(), clean)),
-                existing?.encryptedServerPayload, existing?.serverRevision, now())
-            val queue = dao.queuedMutations(scope.key)
-            val timestamp = maxOf(now(), (queue.maxOfOrNull { it.createdAt } ?: 0) + 1)
-            val operation = LocalMutation(UUID.randomUUID().toString(), scope.key, doctype, serverId,
-                idempotencyKey, encode(clean), timestamp, displayName,
-                localId = localId, baseRevision = existing?.serverRevision)
-            dao.commitLocal(record, operation, draftId)
-            localId
-        }
-    }
-
-    suspend fun saveAction(scope: Scope, actionId: String, request: JSONObject, idempotencyKey: String, recordType: String, projection: JSONObject, effect: JSONObject? = null, draftId: String? = null) = db.withTransaction {
+    suspend fun enqueue(scope: Scope, catalog: EngineApplicationCatalog, operation: EnginePublishedOperation, input: Any, idempotencyKey: String, expectedRevision: String? = null): String {
+        require(catalog.businessScope == scope.businessScope) { "Catalog belongs to another actor scope" }
+        require(catalog.operations.any { it == operation } && operation.availability == "available" && operation.offlineEligible) { "This published operation is not available for offline execution" }
+        require(idempotencyKey.isNotBlank() && idempotencyKey.length <= 256) { "An idempotency key must contain 1–256 characters" }
+        require(expectedRevision == null || expectedRevision.matches(Regex("^(0|[1-9][0-9]{0,19})$"))) { "Expected revision must be a canonical decimal revision" }
+        val schema = catalog.schemas.singleOrNull { it.ref == operation.inputSchema }?.schema
+            ?: throw IllegalArgumentException("The actor catalog did not publish the operation input schema")
+        val violations = decoder.validateSchemaDocument(schema, input)
+        require(violations.isEmpty()) { "Operation input is invalid: ${violations.joinToString { "${it.path}: ${it.message}" }}" }
         val id = UUID.randomUUID().toString()
-        val localId = "local:$id"
-        val timestamp = maxOf(now(), (dao.queuedMutations(scope.key).maxOfOrNull { it.createdAt } ?: 0) + 1)
-        val record = LocalRecord(scope.key, recordType, localId, null, encode(projection), null, null, timestamp)
-        val mutation = LocalMutation(id, scope.key, "@view-action/$actionId", null, idempotencyKey, encode(request), timestamp, projection.optString("reference"), localId = localId)
-        dao.commitLocal(record, mutation, draftId)
-        if (effect != null) {
-            val type = effect.optString("doctype")
-            val field = effect.optString("quantity_field")
-            val lines = effect.optJSONArray("lines") ?: JSONArray()
-            if (type.isBlank() || field.isBlank() || lines.length() == 0 || (0 until lines.length()).any { lines.optJSONObject(it)?.optString("quantity", "0")?.toBigDecimalOrNull() in setOf(null, java.math.BigDecimal.ZERO) }) throw KoraError("invalid_local_effect", "This change is missing quantity details")
-            dao.putEntry(LocalEntry(scope.key, "effect:$id", encode(effect), now(), "local-effect"))
-            val names = linkedSetOf<String>()
-            for (i in 0 until lines.length()) lines.optJSONObject(i)?.optString("name")?.takeIf(String::isNotBlank)?.let { names += it }
-            for (name in names) recomputeQuantity(scope, type, name, field, requireAvailable = true)
-        }
+        val json = input.toJsonValue()
+        val entity = OfflineIntentEntity(scope.key, id, idempotencyKey, scope.businessScope.toWire().toString(), catalog.revision,
+            operation.operationRef, JSONObject().put("id", operation.inputSchema.id).put("version", operation.inputSchema.version).toString(),
+            encode(json), expectedRevision, createdAt = System.currentTimeMillis())
+        dao.insertIntent(entity)
+        return id
     }
 
-    private suspend fun relatedEffects(scope: Scope, type: String, record: LocalRecord, field: String): List<Pair<LocalMutation, JSONObject>> {
-        return dao.entries(scope.key, "local-effect").mapNotNull { entry ->
-            val effect = decode(entry.encryptedPayload)
-            if (effect.optString("doctype") != type || effect.optString("quantity_field") != field) return@mapNotNull null
-            val lines = effect.optJSONArray("lines") ?: return@mapNotNull null
-            if ((0 until lines.length()).none { line -> lines.optJSONObject(line)?.optString("name") in setOf(record.localId, record.serverId) }) return@mapNotNull null
-            val operation = dao.mutation(scope.key, entry.entryKey.removePrefix("effect:")) ?: return@mapNotNull null
-            operation to effect
-        }
-    }
-
-    private suspend fun recomputeQuantity(scope: Scope, type: String, name: String, field: String, requireAvailable: Boolean = false) {
-        val record = dao.record(scope.key, type, name) ?: throw KoraError("stock_unavailable", "Download this item before recording a sale")
-        val baseline = record.encryptedServerPayload?.let { decode(it) }
-            ?: dao.queuedMutations(scope.key).firstOrNull { it.doctype == type && it.localId == record.localId && it.recordName == null }
-                ?.let { decode(it.encryptedPayload) }
-            ?: throw KoraError("stock_unavailable", "This item has no saved starting quantity")
-        val productEdits = dao.queuedMutations(scope.key).filter { it.doctype == type && target(it, record) && it.status !in setOf("rejected", "conflict", "blocked") }
-        val effective = productEdits.fold(baseline) { acc, op -> merged(acc, decode(op.encryptedPayload)) }
-        val effects = relatedEffects(scope, type, record, field)
-        var delta = java.math.BigDecimal.ZERO
-        for ((operation, effect) in effects) {
-            if (operation.status in setOf("rejected", "conflict", "blocked", "discarded")) continue
-            val reconciled = effect.optJSONArray("reconciled") ?: JSONArray()
-            if (operation.status == "acked" && (0 until reconciled.length()).any { reconciled.optString(it) in setOf(record.localId, record.serverId) }) continue
-            val lines = effect.optJSONArray("lines") ?: continue
-            for (i in 0 until lines.length()) lines.optJSONObject(i)?.takeIf { it.optString("name") in setOf(record.localId, record.serverId) }?.let { line ->
-                delta += line.optString("quantity", "0").toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
-            }
-        }
-        val available = effective.optString(field, "0").toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
-        if (requireAvailable && available.subtract(delta) < java.math.BigDecimal.ZERO) throw KoraError("stock_unavailable", "Not enough saved quantity is available for this change")
-        effective.put(field, available.subtract(delta).max(java.math.BigDecimal.ZERO).toPlainString())
-        dao.putRecord(record.copy(encryptedPayload = encode(effective), updatedAt = now()))
-    }
-
-    private suspend fun effectProducts(scope: Scope, operation: LocalMutation): List<Triple<String, String, String>> {
-        val effect = dao.getEntry(scope.key, "effect:${operation.id}")?.let { decode(it.encryptedPayload) } ?: return emptyList()
-        val type = effect.optString("doctype")
-        val field = effect.optString("quantity_field")
-        val lines = effect.optJSONArray("lines") ?: return emptyList()
-        return (0 until lines.length()).mapNotNull { lines.optJSONObject(it)?.optString("name")?.takeIf(String::isNotBlank) }
-            .distinct().map { Triple(type, it, field) }
-    }
-
-    /** Called inside a transaction; preserves the local overlay when a refresh arrives. */
-    private suspend fun upsertServer(scope: Scope, doctype: String, data: JSONObject) {
-        val name = data.optString("name").takeIf { it.isNotBlank() } ?: return
-        val old = dao.record(scope.key, doctype, name)
-        val allEffects = dao.entries(scope.key, "local-effect").mapNotNull { entry ->
-            val effect = decode(entry.encryptedPayload)
-            if (effect.optString("doctype") != doctype || (0 until (effect.optJSONArray("lines")?.length() ?: 0)).none { effect.optJSONArray("lines")?.optJSONObject(it)?.optString("name") in setOf(name, old?.localId) }) null
-            else dao.mutation(scope.key, entry.entryKey.removePrefix("effect:"))?.let { it to effect }
-        }
-        if (old != null && allEffects.any { it.first.status in setOf("queued", "sent") }) return
-        for ((operation, effect) in allEffects.filter { it.first.status == "acked" }) {
-            val reconciled = effect.optJSONArray("reconciled") ?: JSONArray().also { effect.put("reconciled", it) }
-            if ((0 until reconciled.length()).none { reconciled.optString(it) == name }) reconciled.put(name)
-            dao.putEntry(LocalEntry(scope.key, "effect:${operation.id}", encode(effect), now(), "local-effect"))
-        }
-        val localId = old?.localId ?: "server:$doctype:$name"
-        val pending = dao.queuedMutations(scope.key).filter { it.doctype == doctype && (it.localId == localId || it.recordName == name) }
-        val effective = pending.fold(data) { acc, op -> merged(acc, decode(op.encryptedPayload)) }
-        dao.putRecord(LocalRecord(scope.key, doctype, localId, name, encode(effective), encode(data), revision(data), old?.updatedAt ?: now()))
-    }
-
-    suspend fun hasPullCursor(scope: Scope) = dao.getEntry(scope.key, "offline-pull-cursor") != null
-
-    suspend fun isCovered(scope: Scope, doctype: String): Boolean = typeRoutes(scope).let { routes ->
-        routes.keys().asSequence().any { routes.optString(it) == doctype }
-    }
-
-    private suspend fun typeRoutes(scope: Scope): JSONObject = dao.getEntry(scope.key, "offline-type-routes")
-        ?.let { decode(it.encryptedPayload) } ?: JSONObject()
-
-    /** A snapshot page and its checkpoint are persisted together; final installation is atomic. */
-    suspend fun capabilities(scope: Scope): JSONObject = remote.capabilities(scope)
-
-    suspend fun bootstrap(scope: Scope, routes: Map<String, String>, expectedGeneration: Long? = null, onPage: (Int) -> Unit = {}) = bootstrapMutex.withLock {
-        val selection = JSONObject(routes)
-        val saved = dao.getEntry(scope.key, "offline-bootstrap-progress")?.let { decode(it.encryptedPayload) }
-        val progress = saved?.takeIf { savedPage ->
-            savedPage.optJSONObject("routes")?.let { old ->
-                old.length() == routes.size && routes.all { (name, route) -> old.optString(name) == route }
-            } == true
-        }
-        if (saved != null && progress == null) db.withTransaction {
-            saved.optString("token").takeIf(String::isNotBlank)?.let { dao.deleteEntries(scope.key, "snapshot:$it") }
-            dao.deleteEntry(scope.key, "offline-bootstrap-progress")
-        }
-        var token = progress?.optString("token")?.takeIf(String::isNotBlank)
-        var next = progress?.optString("next")?.takeIf(String::isNotBlank)
-        val startedAt = progress?.optLong("started_at")?.takeIf { it > 0 } ?: now()
-        var pages = progress?.optInt("pages") ?: 0
-        try {
-            while (true) {
-                val page = remote.bootstrap(scope, routes.keys.toList(), token, next)
-                val pageToken = page.optString("snapshot_token").takeIf(String::isNotBlank)
-                    ?: throw KoraError("invalid_bootstrap", "Kora did not identify the workspace snapshot", retryable = true)
-                if (token != null && token != pageToken) throw KoraError("invalid_bootstrap", "Kora changed the workspace snapshot", retryable = true)
-                token = pageToken
-                if (expectedGeneration != null && page.optLong("generation", -1) != expectedGeneration) {
-                    throw KoraError("offline.generation_changed", "Workspace configuration changed during download. Download it again.", 409)
-                }
-                val category = "snapshot:$pageToken"
-                val records = page.optJSONArray("records") ?: throw KoraError("invalid_bootstrap", "Kora omitted workspace records", retryable = true)
-                val index = next?.toIntOrNull() ?: 0
-                val complete = page.optBoolean("complete")
-                val cursor = page.optString("pull_cursor")
-                if (complete && cursor.isBlank()) throw KoraError("invalid_bootstrap", "Kora omitted the change cursor", retryable = true)
-                val nextPage = page.optString("next_page_token")
-                if (!complete && (nextPage.isBlank() || nextPage == next)) throw KoraError("invalid_bootstrap", "Kora did not advance the workspace page", retryable = true)
-                db.withTransaction {
-                    for (i in 0 until records.length()) {
-                        val item = records.optJSONObject(i) ?: throw KoraError("invalid_bootstrap", "Kora returned an invalid record", retryable = true)
-                        val name = item.optString("doctype")
-                        if (!routes.containsKey(name) || item.optJSONObject("record") == null) throw KoraError("invalid_bootstrap", "Kora returned a record outside this workspace", retryable = true)
-                        dao.putEntry(LocalEntry(scope.key, "$category:${index + i}", encode(item), now(), category))
-                    }
-                    if (complete) {
-                        val staged = dao.entries(scope.key, category)
-                        val present = mutableMapOf<String, MutableSet<String>>()
-                        for (entry in staged) {
-                            val item = decode(entry.encryptedPayload)
-                            val route = routes[item.getString("doctype")] ?: continue
-                            val record = item.getJSONObject("record")
-                            val id = record.optString("name")
-                            if (id.isBlank()) throw KoraError("invalid_bootstrap", "Kora returned a record without an ID", retryable = true)
-                            present.getOrPut(route) { mutableSetOf() } += id
-                            upsertServer(scope, route, record)
-                        }
-                        for (route in routes.values.distinct()) {
-                            for (old in dao.records(scope.key, route)) {
-                                if (old.serverId != null && old.serverId !in present.getOrPut(route) { mutableSetOf() } && old.updatedAt < startedAt) removeOrConflict(scope, old)
-                            }
-                            dao.putEntry(LocalEntry(scope.key, "records-downloaded:$route", cipher.encrypt("${present[route]?.size ?: 0}"), now(), "coverage"))
-                        }
-                        val previousRoutes = typeRoutes(scope)
-                        for (name in previousRoutes.keys()) {
-                            val oldRoute = previousRoutes.optString(name)
-                            if (oldRoute.isBlank() || oldRoute in routes.values) continue
-                            for (old in dao.records(scope.key, oldRoute)) removeOrConflict(scope, old)
-                            dao.deleteEntry(scope.key, "records-downloaded:$oldRoute")
-                        }
-                        dao.putEntry(LocalEntry(scope.key, "offline-type-routes", encode(selection), now(), "coverage"))
-                        dao.putEntry(LocalEntry(scope.key, "offline-pull-cursor", cipher.encrypt(cursor), now(), "coverage"))
-                        dao.deleteEntry(scope.key, "offline-bootstrap-progress")
-                        dao.deleteEntries(scope.key, category)
-                    } else {
-                        dao.putEntry(LocalEntry(scope.key, "offline-bootstrap-progress", encode(JSONObject().put("token", pageToken).put("next", nextPage).put("routes", selection).put("started_at", startedAt).put("pages", pages + 1)), now(), "coverage"))
-                    }
-                }
-                pages++
-                onPage(pages)
-                if (complete) break
-                next = nextPage
-            }
-        } catch (error: KoraError) {
-            if (error.code == "offline.rebootstrap_required" || error.status == 409) {
-                val oldToken = token
-                db.withTransaction {
-                    dao.deleteEntry(scope.key, "offline-bootstrap-progress")
-                    if (oldToken != null) dao.deleteEntries(scope.key, "snapshot:$oldToken")
-                }
-            }
-            throw error
-        }
-    }
-
-    private suspend fun removeOrConflict(scope: Scope, record: LocalRecord) {
-        val pending = dao.queuedMutations(scope.key).filter { target(it, record) }
-        if (pending.isEmpty()) dao.deleteRecord(scope.key, record.doctype, record.localId)
-        else for (op in pending) dao.putMutation(op.copy(status = "conflict", lastError = "This record was removed or is no longer accessible on the server. Review your saved changes."))
-    }
-
-    suspend fun pull(scope: Scope) = pullMutex.withLock {
-        val routes = typeRoutes(scope)
-        if (routes.length() == 0) return@withLock
-        repeat(1000) {
-            val stored = dao.getEntry(scope.key, "offline-pull-cursor") ?: return@withLock
-            val cursor = cipher.decrypt(stored.encryptedPayload) ?: throw KoraError("invalid_cursor", "The saved change cursor could not be read")
-            val page = remote.pull(scope, cursor)
-            val next = page.optString("next_cursor").takeIf(String::isNotBlank)
-                ?: throw KoraError("invalid_pull", "Kora omitted the next change cursor", retryable = true)
-            val changes = page.optJSONArray("changes") ?: throw KoraError("invalid_pull", "Kora omitted record changes", retryable = true)
-            val tombstones = page.optJSONArray("tombstones") ?: throw KoraError("invalid_pull", "Kora omitted deletion markers", retryable = true)
-            db.withTransaction {
-                for (i in 0 until changes.length()) {
-                    val item = changes.optJSONObject(i) ?: throw KoraError("invalid_pull", "Kora returned an invalid change", retryable = true)
-                    val route = routes.optString(item.optString("doctype"))
-                    if (route.isBlank()) continue
-                    val record = item.optJSONObject("record") ?: throw KoraError("invalid_pull", "Kora returned an invalid record", retryable = true)
-                    upsertServer(scope, route, record)
-                }
-                for (i in 0 until tombstones.length()) {
-                    val marker = tombstones.optJSONObject(i) ?: continue
-                    val route = routes.optString(marker.optString("doctype"))
-                    if (route.isBlank()) continue
-                    dao.record(scope.key, route, marker.optString("name"))?.let { removeOrConflict(scope, it) }
-                }
-                dao.putEntry(LocalEntry(scope.key, "offline-pull-cursor", cipher.encrypt(next), now(), "coverage"))
-            }
-            if (!page.optBoolean("has_more")) return@withLock
-            if (next == cursor) throw KoraError("invalid_pull", "Kora did not advance the change cursor", retryable = true)
-        }
-        throw KoraError("pull_incomplete", "Kora has more changes than this sync run can process", retryable = true)
-    }
-
-    suspend fun refreshRecord(scope: Scope, doctype: String, name: String) {
-        val local = dao.record(scope.key, doctype, name)
-        val serverId = local?.serverId ?: name.takeUnless { it.startsWith("local:") } ?: return
-        val fresh = remote.get(scope, doctype, serverId)
-        db.withTransaction { upsertServer(scope, doctype, fresh) }
-    }
-
-    override suspend fun refresh(scope: Scope, doctype: String) = refreshMutex.withLock {
-        importLegacy(scope, doctype)
-        // REST compatibility: fetch every page, then replace the baseline atomically.
-        // This is not a snapshot cursor protocol; don't delete missing rows on this path.
-        val all = linkedMapOf<String, JSONObject>()
-        var offset = 0
-        while (true) {
-            val page = remote.list(scope, doctype, offset, 100)
-            var added = 0
-            for (i in 0 until page.length()) page.optJSONObject(i)?.let { row ->
-                val name = row.optString("name")
-                if (name.isNotBlank() && all.put(name, row) == null) added++
-            }
-            if (page.length() == 0) break
-            if (added == 0 || offset >= 100_000) throw KoraError("pagination_incomplete", "Kora did not return another page. The previous download has been kept.")
-            offset += page.length()
-        }
-        db.withTransaction {
-            all.values.forEach { upsertServer(scope, doctype, it) }
-            dao.putEntry(LocalEntry(scope.key, "records-downloaded:$doctype", cipher.encrypt("${all.size}"), now(), "coverage"))
-        }
-    }
-
-    override suspend fun sync(scope: Scope, force: Boolean): SyncResult = syncMutex.withLock {
-        var count = 0
+    suspend fun sync(scope: Scope, catalog: EngineApplicationCatalog): SyncResult = syncMutex.withLock {
+        lastCatalogs[scope.key] = catalog
+        var acknowledged = 0
         var firstError: Exception? = null
-        var retryAt: Long? = null
-        val touched = linkedSetOf<String>()
-        val queue = dao.queuedMutations(scope.key)
-        val blockedTargets = mutableSetOf<String>()
-        for (original in queue) {
-            if (!canSync(scope)) return@withLock SyncResult(count, KoraError("actor_changed", "Sign in again to sync this workspace", 401))
-            val target = original.localId ?: "${original.doctype}:${original.recordName ?: original.id}"
-            if (target in blockedTargets || original.status in setOf("conflict", "rejected", "blocked")) {
-                blockedTargets += target
-                continue
+        if (!canSync(scope)) return@withLock SyncResult(0, KoraError("actor_changed", "Sign in again to sync this workspace", 401))
+        val capabilities: JSONObject
+        try {
+            capabilities = decoder.decode("OfflineCapabilities", remote.capabilities(scope).toString())
+            if (capabilities.getInt("protocol_version") != 2 || capabilities.getLong("catalog_revision") != catalog.revision || capabilities.getInt("max_batch_size") < 1) {
+                return@withLock SyncResult(0, KoraError("offline_capabilities_changed", "Refresh the published catalog before syncing saved actions", 409))
             }
-            if (!force && original.nextAttemptAt > now()) {
-                retryAt = minOf(retryAt ?: Long.MAX_VALUE, original.nextAttemptAt)
-                blockedTargets += target
-                continue
-            }
+        } catch (error: Exception) {
+            return@withLock SyncResult(0, error)
+        }
+        for (original in dao.pendingIntents(scope.key)) {
+            if (!canSync(scope)) return@withLock SyncResult(acknowledged, KoraError("actor_changed", "Sign in again to sync this workspace", 401))
+            var requestDispatched = false
             try {
-                val operation = db.withTransaction {
-                    val current = dao.mutation(scope.key, original.id) ?: return@withTransaction null
-                    if (current.status == "acked") return@withTransaction null
-                    val record = current.localId?.let { dao.recordByLocalId(scope.key, it) }
-                    val unresolvedBody = decode(current.encryptedPayload)
-                    val body = if (current.attempts == 0) resolveReferences(scope, unresolvedBody) as JSONObject else unresolvedBody
-                    val previous = queue.takeWhile { it.id != current.id }.any { it.localId != null && it.localId == current.localId }
-                    current.copy(recordName = if (current.attempts == 0 && current.localId != null) record?.serverId else current.recordName,
-                        baseRevision = if (current.attempts == 0 && previous) record?.serverRevision else current.baseRevision,
-                        encryptedPayload = encode(body), status = "sent", attempts = current.attempts + 1, lastError = null).also { dao.putMutation(it) }
-                } ?: continue
-                val body = decode(operation.encryptedPayload)
-                val result = remote.send(scope, operation, operation.recordName, body)
-                db.withTransaction {
-                    val action = operation.doctype.startsWith("@view-action/")
-                    val old = operation.localId?.let { dao.recordByLocalId(scope.key, it) }
-                        ?: operation.recordName?.let { dao.record(scope.key, operation.doctype, it) }
-                        ?: dao.record(scope.key, operation.doctype, "local:${operation.id}")
-                    val type = old?.doctype ?: if (action) "sale" else operation.doctype
-                    val serverId = result.optString("name").takeIf { it.isNotBlank() }
-                        ?: throw KoraError("invalid_receipt", "Kora did not confirm a record ID", retryable = true)
-                    val duplicate = dao.record(scope.key, type, serverId)
-                    if (old != null && duplicate != null && old.localId != duplicate.localId) dao.deleteRecord(scope.key, type, duplicate.localId)
-                    val remaining = dao.queuedMutations(scope.key).filter { it.id != operation.id && old != null && target(it, old) }
-                    val baseline = merged(if (action) old?.let { resolveReferences(scope, decode(it.encryptedPayload)) as JSONObject } ?: JSONObject() else body, result)
-                    if (action) {
-                        baseline.remove("_payment_state")
-                        baseline.remove("_payment_intent")
-                    }
-                    val effective = remaining.fold(baseline) { acc, op -> merged(acc, decode(op.encryptedPayload)) }
-                    val saved = LocalRecord(scope.key, type, old?.localId ?: "server:$type:$serverId", serverId,
-                        encode(effective), encode(baseline), revision(result), now())
-                    dao.acknowledge(saved, operation)
-                    if (!action) {
-                        val affectedFields = linkedSetOf<String>()
-                        for (pending in dao.queuedMutations(scope.key).filter { it.doctype.startsWith("@view-action/") }) {
-                            for ((effectType, effectName, field) in effectProducts(scope, pending)) {
-                                if (effectType == type && effectName in setOf(saved.localId, saved.serverId)) affectedFields += field
-                            }
-                        }
-                        for (field in affectedFields) recomputeQuantity(scope, type, saved.localId, field)
-                    }
-                    touched += type
+                val operation = catalog.operations.singleOrNull { it.operationRef == original.operationRef }
+                    ?: throw KoraError("catalog_revoked", "This action is no longer published. Your saved intent needs review.", 409)
+                if (catalog.revision != original.catalogRevision || operation.availability != "available" || !operation.offlineEligible ||
+                    original.inputSchema != JSONObject().put("id", operation.inputSchema.id).put("version", operation.inputSchema.version).toString()) {
+                    throw KoraError("catalog_changed", "The actor catalog changed. Review this saved intent before syncing.", 409)
                 }
-                if (operation.doctype.startsWith("@view-action/")) {
-                    for ((type, name, _) in effectProducts(scope, operation)) {
-                        try { refreshRecord(scope, type, name) }
-                        catch (cancelled: CancellationException) { throw cancelled }
-                        catch (_: Exception) { /* The provisional quantity remains until pull reconciles it. */ }
-                    }
+                if (!declaresOfflineOperation(capabilities, operation)) {
+                    throw KoraError("module.operation_online_only", "Engine no longer declares this action eligible for offline replay", 409)
                 }
-                count++
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) {
-                val current = dao.mutation(scope.key, original.id) ?: original
+                val input = decodeObject(original.encryptedInput)
+                val schema = catalog.schemas.singleOrNull { it.ref == operation.inputSchema }?.schema
+                    ?: throw KoraError("schema_revoked", "The input schema is no longer published", 409)
+                val violations = decoder.validateSchemaDocument(schema, input)
+                if (violations.isNotEmpty()) throw KoraError("schema_invalid", "Saved intent no longer matches its published schema", 409)
+                val wire = JSONObject().put("local_operation_id", original.localOperationId)
+                    .put("business_scope", scope.businessScope.toWire()).put("operation_ref", original.operationRef)
+                    .put("input_schema", JSONObject(original.inputSchema)).put("input", input)
+                    .put("idempotency_key", original.idempotencyKey).put("catalog_revision", original.catalogRevision)
+                original.expectedRevision?.let { wire.put("expected_revision", it) }
+                // Persist sent before dispatch so process death only recovers this same intent/key.
+                val sent = original.copy(status = "sent", lastError = null)
+                dao.putIntent(sent)
+                val recoveredReceipt = if (original.status in setOf("sent", "accepted", "outcome_unknown")) {
+                    remote.lookupIntent(scope, original.operationRef, original.idempotencyKey)
+                        ?.also { validateReceipt(scope, catalog, operation, it) }
+                } else null
+                val resolved = recoveredReceipt ?: run {
+                    requestDispatched = true
+                    val result = remote.sendIntent(scope, wire)
+                    receiptFor(result, original.localOperationId).also { validateReceipt(scope, catalog, operation, it) }
+                }
+                val receipt = resolved
+                when (receipt.requiredString("status")) {
+                    "completed" -> {
+                        dao.putIntent(sent.copy(status = "applied", encryptedReceipt = encode(receipt), lastError = null))
+                        acknowledged++
+                    }
+                    "rejected", "failed" -> dao.putIntent(sent.copy(status = "rejected", encryptedReceipt = encode(receipt), lastError = receipt.optJSONObject("error")?.optString("message")))
+                    "conflict" -> dao.putIntent(sent.copy(status = "conflict", encryptedReceipt = encode(receipt), lastError = receipt.optJSONObject("error")?.optString("message")))
+                    "accepted", "running" -> dao.putIntent(sent.copy(status = "accepted", encryptedReceipt = encode(receipt), lastError = null))
+                    "outcome_unknown" -> dao.putIntent(sent.copy(status = "outcome_unknown", encryptedReceipt = encode(receipt), lastError = receipt.optJSONObject("error")?.optString("message")))
+                    else -> dao.putIntent(sent.copy(status = "blocked", encryptedReceipt = encode(receipt), lastError = "Engine returned an unsupported receipt state"))
+                }
+            } catch (error: Exception) {
                 val kora = error as? KoraError
-                val temporary = kora?.retryable == true || error is java.io.IOException || error is android.database.sqlite.SQLiteException
                 val status = when {
-                    temporary -> "queued"
-                    kora?.status == 401 -> "queued"
-                    kora?.code == "dependency_pending" -> "queued"
-                    kora?.status == 409 -> "conflict"
-                    else -> "rejected"
+                    kora?.code == "module.operation_receipt_not_found" -> "sent"
+                    kora?.code == "module.stale_catalog" || kora?.code == "module.stale_intent" || kora?.code == "module.operation_online_only" -> "blocked"
+                    kora?.status == 409 -> "blocked"
+                    kora?.status == 401 -> "sent"
+                    kora?.status in 400..499 -> "blocked"
+                    original.status == "queued" && !requestDispatched -> "queued"
+                    else -> "outcome_unknown"
                 }
-                val next = if (temporary) now() + (30_000L * (1L shl current.attempts.coerceIn(0, 6))).coerceAtMost(1_800_000L) else 0
-                db.withTransaction {
-                    dao.putMutation(current.copy(status = status, lastError = error.message, nextAttemptAt = next))
-                    if (current.doctype.startsWith("@view-action/") && status in setOf("rejected", "conflict")) {
-                        for ((type, name, field) in effectProducts(scope, current)) recomputeQuantity(scope, type, name, field)
-                        dao.deleteEntry(scope.key, "effect:${current.id}")
-                    }
-                }
-                if (status == "conflict" && current.recordName != null && !current.doctype.startsWith("@view-action/")) {
-                    try { refreshRecord(scope, current.doctype, current.recordName) }
-                    catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { /* keep both the operation and last known baseline */ }
-                }
+                dao.putIntent(original.copy(status = status, lastError = error.message))
                 firstError = firstError ?: error
-                blockedTargets += target
-                if (temporary || kora?.status == 401) {
-                    retryAt = next.takeIf { it > 0 }
-                    break // endpoint failure affects every remaining operation
-                }
             }
         }
-        SyncResult(count, firstError, retryAt)
+        SyncResult(acknowledged, firstError)
     }
 
-    private suspend fun resolveReferences(scope: Scope, value: Any?): Any? = when (value) {
-        is JSONObject -> JSONObject().apply { for (key in value.keys()) put(key, resolveReferences(scope, value.opt(key))) }
-        is JSONArray -> JSONArray().apply { for (i in 0 until value.length()) put(resolveReferences(scope, value.opt(i))) }
-        is String -> if (value.startsWith("local:")) {
-            dao.recordByLocalId(scope.key, value)?.serverId ?: throw KoraError("dependency_pending", "Waiting for a linked record to sync")
-        } else value
-        else -> value
+    private suspend fun validateReceipt(scope: Scope, catalog: EngineApplicationCatalog, operation: EnginePublishedOperation, receipt: JSONObject) {
+        val parsed = decoder.decodeOperationReceipt(receipt.toString())
+        require(parsed.operationRef == operation.operationRef && parsed.businessScope == scope.businessScope) { "Engine receipt does not match the intent scope" }
+        if (parsed.status == "completed") {
+            require(parsed.outputSchema == operation.outputSchema) { "Engine receipt output schema changed" }
+            val output = parsed.output ?: throw IllegalArgumentException("Completed operation receipt has no output")
+            val schema = catalog.schemas.singleOrNull { it.ref == operation.outputSchema }?.schema
+                ?: throw IllegalArgumentException("Output schema is no longer published")
+            require(decoder.validateSchemaDocument(schema, output).isEmpty()) { "Engine output did not match its published schema" }
+        }
     }
 
-    suspend fun retry(scope: Scope, id: String) {
-        val operation = dao.mutation(scope.key, id) ?: return
-        // Rejected/conflicting payloads need correction; replaying them unchanged cannot resolve them.
-        if (operation.status !in setOf("conflict", "rejected", "acked")) dao.putMutation(operation.copy(nextAttemptAt = 0))
+    // Receipts returned by /offline/intents are individually contract-validated here.
+    private fun receiptFor(response: JSONObject, localId: String): JSONObject {
+        val decoded = decoder.decode("OfflineIntentsResponse", response.toString())
+        val receipts = decoded.optJSONArray("receipts") ?: JSONArray()
+        val matches = (0 until receipts.length()).map { receipts.getJSONObject(it) }.filter { it.optString("local_operation_id") == localId }
+        require(receipts.length() == 1 && matches.size == 1) { "Engine did not return exactly one receipt for this offline intent" }
+        return matches.single().requiredObject("receipt")
     }
 
-    suspend fun acceptServer(scope: Scope, id: String) = db.withTransaction {
-        val op = dao.mutation(scope.key, id) ?: return@withTransaction
-        if (op.status !in setOf("conflict", "rejected")) return@withTransaction
-        val record = op.localId?.let { dao.recordByLocalId(scope.key, it) }
-        dao.putMutation(op.copy(status = "discarded"))
-        if (record != null) {
-            val remaining = dao.queuedMutations(scope.key).filter { target(it, record) }
-            if (record.encryptedServerPayload == null && remaining.isEmpty()) dao.deleteRecord(scope.key, record.doctype, record.localId)
-            else {
-                val baseline = record.encryptedServerPayload?.let(::decode) ?: JSONObject()
-                val effective = remaining.fold(baseline) { acc, pending -> merged(acc, decode(pending.encryptedPayload)) }
-                dao.putRecord(record.copy(encryptedPayload = encode(effective)))
+    suspend fun replaceSnapshot(scope: Scope, owner: String, rows: List<Pair<String, Any>>, complete: Boolean) = db.withTransaction {
+        if (complete) dao.clearFacts(scope.key, owner)
+        rows.forEach { (key, value) -> dao.putFact(OfflineFactEntity(scope.key, owner, key, encode(value), false, System.currentTimeMillis())) }
+    }
+
+    fun observeIntents(scope: Scope) = dao.observeIntents(scope.key)
+    suspend fun hasPending(scope: Scope) = dao.pendingIntents(scope.key).isNotEmpty()
+
+    suspend fun observeCatalogThenSync(scope: Scope): SyncResult {
+        val capabilities = remote.capabilities(scope)
+        decoder.decode("OfflineCapabilities", capabilities.toString())
+        val catalog = lastCatalogs[scope.key] ?: throw KoraError("catalog_required", "Refresh the actor catalog before syncing saved actions", 409)
+        return sync(scope, catalog)
+    }
+
+    suspend fun bootstrap(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any, limit: Int? = null): JSONObject {
+        require(catalog.businessScope == scope.businessScope && catalog.queries.any { it == query && it.offlineEligible } && !query.offlineFactKey.isNullOrBlank()) { "Query is not eligible for offline bootstrap" }
+        validateCatalogValue(catalog, query.inputSchema, input)
+        val source = JSONObject().put("owner_module_id", query.ownerModuleId).put("query_name", query.name)
+            .put("input_schema", JSONObject().put("id", query.inputSchema.id).put("version", query.inputSchema.version)).put("input", input)
+        val capabilities = decoder.decode("OfflineCapabilities", remote.capabilities(scope).toString())
+        require(capabilities.getLong("catalog_revision") == catalog.revision && capabilities.getInt("protocol_version") == 2) { "Offline feed capabilities changed; refresh the catalog" }
+        require(declaresOfflineQuery(capabilities, query)) { "Engine no longer declares this query eligible for offline bootstrap" }
+        val pageLimit = minOf(limit ?: query.pageLimit, query.pageLimit, capabilities.getInt("max_page_size"))
+        require(pageLimit > 0) { "Engine offline page size is unavailable" }
+        val request = JSONObject().put("source", source).put("business_scope", scope.businessScope.toWire())
+            .put("catalog_revision", catalog.revision).put("limit", pageLimit)
+        var response = remote.bootstrap(scope, request)
+        var decoded = decoder.decode("OfflineSnapshotPage", response.toString())
+        validateSnapshotIdentity(scope, catalog, query, source, decoded, expectedHash = null, expectedSubject = null, expectedSnapshot = null)
+        val rows = decoded.opt("rows") as? JSONArray ?: throw IllegalArgumentException("Snapshot rows must be an array")
+        val all = mutableListOf<Pair<String, Any>>()
+        appendSnapshotRows(rows, all, requireNotNull(query.offlineFactKey))
+        val inputHash = decoded.getString("input_hash")
+        val subjectId = decoded.getString("subject_id")
+        val snapshotToken = decoded.getString("snapshot_token")
+        val replayPosition = decoded.getString("replay_position")
+        var pages = 1
+        while (!decoded.getBoolean("complete")) {
+            pages++
+            require(pages <= 10_000) { "Offline snapshot page limit exceeded" }
+            val next = decoded.optString("next_page_cursor").takeIf(String::isNotBlank)
+                ?: throw IllegalArgumentException("Incomplete snapshot omitted its next page cursor")
+            request.put("snapshot_token", snapshotToken).put("page_cursor", next).put("input_hash", inputHash)
+            response = remote.bootstrap(scope, request)
+            decoded = decoder.decode("OfflineSnapshotPage", response.toString())
+            validateSnapshotIdentity(scope, catalog, query, source, decoded, inputHash, subjectId, snapshotToken, replayPosition)
+            val page = decoded.optJSONArray("rows") ?: throw IllegalArgumentException("Snapshot rows must be an array")
+            appendSnapshotRows(page, all, requireNotNull(query.offlineFactKey))
+        }
+        validateCatalogValue(catalog, query.outputSchema, JSONArray(all.map { it.second }))
+        require(all.map { it.first }.distinct().size == all.size) { "Offline snapshot contains duplicate fact keys" }
+        val checkpoint = JSONObject().put("snapshot_token", snapshotToken)
+            .put("input_hash", inputHash).put("replay_position", replayPosition)
+            .put("catalog_revision", catalog.revision).put("schema_revision", JSONObject().put("id", query.outputSchema.id).put("version", query.outputSchema.version))
+            .put("source", source).put("business_scope", scope.businessScope.toWire()).put("subject_id", subjectId)
+        db.withTransaction {
+            replaceSnapshot(scope, query.ownerModuleId, all, complete = true)
+            dao.putCheckpoint(OfflineCheckpointEntity(scope.key, query.ownerModuleId, query.name, checkpoint.getString("input_hash"), encode(checkpoint), catalog.revision))
+        }
+        return checkpoint
+    }
+
+    suspend fun pull(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any, checkpoint: JSONObject, limit: Int = 100): JSONObject {
+        require(catalog.businessScope == scope.businessScope && catalog.queries.any { it == query && it.offlineEligible })
+        validateCatalogValue(catalog, query.inputSchema, input)
+        val source = JSONObject().put("owner_module_id", query.ownerModuleId).put("query_name", query.name)
+            .put("input_schema", JSONObject().put("id", query.inputSchema.id).put("version", query.inputSchema.version)).put("input", input)
+        val capabilities = decoder.decode("OfflineCapabilities", remote.capabilities(scope).toString())
+        require(capabilities.getLong("catalog_revision") == catalog.revision && capabilities.getInt("protocol_version") == 2) { "Offline feed capabilities changed; refresh the catalog" }
+        require(declaresOfflineQuery(capabilities, query)) { "Engine no longer declares this query eligible for offline replay" }
+        val pageLimit = minOf(limit, query.pageLimit, capabilities.getInt("max_page_size"))
+        require(pageLimit > 0) { "Engine offline page size is unavailable" }
+        val inputHash = checkpoint.getString("input_hash")
+        require(checkpoint.getLong("catalog_revision") == catalog.revision && checkpoint.getJSONObject("business_scope").toBusinessScope() == scope.businessScope &&
+            checkpoint.getString("subject_id") == scope.userId && sameSource(checkpoint.getJSONObject("source"), source) &&
+            inputHash == sha256(input.toString()) && schemaRef(checkpoint.getJSONObject("schema_revision")) == query.outputSchema) {
+            "Saved offline checkpoint no longer matches the active actor catalog and source"
+        }
+        val request = JSONObject().put("source", source).put("business_scope", scope.businessScope.toWire()).put("catalog_revision", catalog.revision)
+            .put("snapshot_token", checkpoint.getString("snapshot_token")).put("input_hash", inputHash)
+            .put("replay_position", checkpoint.getString("replay_position")).put("limit", pageLimit)
+        checkpoint.optString("through_cursor").takeIf(String::isNotBlank)?.let { request.put("through_cursor", it) }
+        checkpoint.optString("page_cursor").takeIf(String::isNotBlank)?.let { request.put("page_cursor", it) }
+        var response = decoder.decode("OfflinePullResponse", remote.pull(scope, request).toString())
+        var pages = 0
+        var expectedThroughCursor = checkpoint.optString("through_cursor").takeIf(String::isNotBlank)
+        while (true) {
+            pages++
+            require(pages <= 10_000) { "Offline feed page limit exceeded" }
+            validatePullIdentity(scope, catalog, query, source, checkpoint, response)
+            val changes = response.optJSONArray("changes") ?: JSONArray()
+            for (i in 0 until changes.length()) {
+                val change = changes.getJSONObject(i)
+                if (change.getBoolean("deleted")) continue
+                val data = change.optJSONObject("data") ?: throw IllegalArgumentException("Non-deletion feed change omitted its full row")
+                validateQueryRow(catalog, query.outputSchema, data)
+                require(factKey(data, requireNotNull(query.offlineFactKey)) == change.getString("fact_key")) { "Offline feed fact key does not match the published row identity" }
             }
+            val nextCursor = response.optString("next_page_cursor").takeIf(String::isNotBlank)
+            if (response.getBoolean("has_more")) require(nextCursor != null) { "Feed page declared more changes without a page cursor" }
+            val throughCursor = response.getString("through_cursor")
+            require(throughCursor.isNotBlank()) { "Feed page omitted its through cursor" }
+            require(expectedThroughCursor == null || expectedThroughCursor == throughCursor) { "Engine feed through cursor changed during pagination" }
+            expectedThroughCursor = throughCursor
+            if (!response.getBoolean("has_more")) require(nextCursor == null) { "Feed page returned a cursor after the final page" }
+            val nextCheckpoint = JSONObject(checkpoint.toString())
+                .put("through_cursor", throughCursor)
+            if (nextCursor != null) nextCheckpoint.put("page_cursor", nextCursor) else {
+                nextCheckpoint.remove("page_cursor")
+                nextCheckpoint.remove("through_cursor")
+                nextCheckpoint.put("replay_position", throughCursor)
+            }
+            db.withTransaction {
+                applyChanges(scope, query.ownerModuleId, changes)
+                dao.putCheckpoint(OfflineCheckpointEntity(scope.key, query.ownerModuleId, query.name, inputHash, encode(nextCheckpoint), catalog.revision))
+            }
+            if (nextCursor == null) break
+            request.put("through_cursor", throughCursor).put("page_cursor", nextCursor)
+            response = decoder.decode("OfflinePullResponse", remote.pull(scope, request).toString())
+        }
+        return response
+    }
+
+    private fun validateSnapshotIdentity(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, source: JSONObject, page: JSONObject, expectedHash: String?, expectedSubject: String?, expectedSnapshot: String?, expectedReplayPosition: String? = null) {
+        require(page.getJSONObject("business_scope").toBusinessScope() == scope.businessScope && page.getLong("catalog_revision") == catalog.revision &&
+            page.getString("subject_id") == scope.userId && schemaRef(page.getJSONObject("schema_revision")) == query.outputSchema &&
+            page.getJSONObject("source").let { sameSource(it, source) } && page.getString("input_hash") == sha256(source.get("input").toString()) &&
+            (expectedHash == null || page.getString("input_hash") == expectedHash) &&
+            (expectedSubject == null || page.getString("subject_id") == expectedSubject) &&
+            (expectedSnapshot == null || page.getString("snapshot_token") == expectedSnapshot) &&
+            (expectedReplayPosition == null || page.getString("replay_position") == expectedReplayPosition)) {
+            "Engine snapshot page identity changed during bootstrap"
         }
     }
 
-    suspend fun correct(scope: Scope, id: String, payload: JSONObject, draftId: String?) = db.withTransaction {
-        val op = dao.mutation(scope.key, id) ?: throw IllegalStateException("Saved change no longer exists")
-        require(op.status in setOf("conflict", "rejected")) { "This change is not waiting for a correction" }
-        require(!op.doctype.startsWith("@view-action/")) { "Review the sale before recording a correction" }
-        val record = op.localId?.let { dao.recordByLocalId(scope.key, it) }
-        dao.putMutation(op.copy(status = "discarded"))
-        if (record != null) {
-            // The correction is a complete editable document. Supersede only later
-            // operations that have never been sent; their desired values are in the form.
-            dao.queuedMutations(scope.key).filter { target(it, record) && it.attempts == 0 && it.createdAt > op.createdAt }
-                .forEach { dao.putMutation(it.copy(status = "discarded")) }
+    private fun validatePullIdentity(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, source: JSONObject, checkpoint: JSONObject, page: JSONObject) {
+        require(page.getJSONObject("business_scope").toBusinessScope() == scope.businessScope && page.getLong("catalog_revision") == catalog.revision &&
+            page.getString("subject_id") == checkpoint.getString("subject_id") && schemaRef(page.getJSONObject("schema_revision")) == query.outputSchema &&
+            page.getJSONObject("source").let { sameSource(it, source) } && page.getString("input_hash") == checkpoint.getString("input_hash") &&
+            page.getString("snapshot_token") == checkpoint.getString("snapshot_token") && page.getString("replay_position") == checkpoint.getString("replay_position")) {
+            "Engine feed page identity changed during replay"
         }
-        save(scope, op.doctype, record?.localId ?: op.recordName, payload, UUID.randomUUID().toString(), op.displayName, draftId)
+        checkpoint.optString("through_cursor").takeIf(String::isNotBlank)?.let { require(page.getString("through_cursor") == it) { "Engine feed through cursor changed during pagination" } }
     }
 
-    companion object {
-        fun stripLocalMetadata(payload: JSONObject): JSONObject = JSONObject().apply {
-            payload.keys().asSequence().filterNot { it.startsWith("_local") || it == "_sync_status" || it == "_version" }.forEach { put(it, payload.opt(it)) }
+    private fun sameSource(a: JSONObject, b: JSONObject): Boolean =
+        a.optString("owner_module_id") == b.optString("owner_module_id") && a.optString("query_name") == b.optString("query_name") &&
+            a.optJSONObject("input_schema")?.toString() == b.optJSONObject("input_schema")?.toString() && a.opt("input")?.toString() == b.opt("input")?.toString()
+
+    private fun declaresOfflineOperation(capabilities: JSONObject, operation: EnginePublishedOperation): Boolean {
+        val entries = capabilities.optJSONArray("offline_operations") ?: return false
+        return (0 until entries.length()).any { index ->
+            val entry = entries.optJSONObject(index) ?: return@any false
+            entry.optString("operation_ref") == operation.operationRef && entry.optBoolean("offline_eligible") &&
+                entry.optString("availability") == "available" &&
+                entry.optJSONObject("input_schema")?.let(::schemaRef) == operation.inputSchema &&
+                entry.optJSONObject("output_schema")?.let(::schemaRef) == operation.outputSchema
         }
+    }
+
+    private fun declaresOfflineQuery(capabilities: JSONObject, query: EnginePublishedQuery): Boolean {
+        val entries = capabilities.optJSONArray("offline_queries") ?: return false
+        return (0 until entries.length()).any { index ->
+            val entry = entries.optJSONObject(index) ?: return@any false
+            entry.optString("owner_module_id") == query.ownerModuleId && entry.optString("name") == query.name &&
+                entry.optBoolean("offline_eligible") && entry.optString("offline_fact_key") == query.offlineFactKey &&
+                entry.optJSONObject("input_schema")?.let(::schemaRef) == query.inputSchema &&
+                entry.optJSONObject("output_schema")?.let(::schemaRef) == query.outputSchema
+        }
+    }
+
+    private fun schemaRef(value: JSONObject) = EngineSchemaRef(value.getString("id"), value.getInt("version"))
+
+    private fun appendSnapshotRows(rows: JSONArray, target: MutableList<Pair<String, Any>>, factKeyField: String) {
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: throw IllegalArgumentException("Snapshot row must be an object")
+            target += factKey(row, factKeyField) to row
+        }
+    }
+
+    private fun factKey(row: JSONObject, field: String): String = row.opt(field)?.takeUnless { it == JSONObject.NULL }?.toString()
+        ?.takeIf(String::isNotBlank)?.also { require(it.length <= 256 && (row.opt(field) is String || row.opt(field) is Number)) }
+        ?: throw IllegalArgumentException("Offline source row is missing its declared stable fact key")
+
+    suspend fun savedCheckpoint(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any): JSONObject? {
+        val hash = sha256(input.toString())
+        val saved = dao.checkpoint(scope.key, query.ownerModuleId, query.name, hash) ?: return null
+        if (saved.catalogRevision != catalog.revision) return null
+        return decodeObject(saved.encryptedCheckpoint)
+    }
+
+    private fun sha256(value: String) = java.security.MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    private fun validateCatalogValue(catalog: EngineApplicationCatalog, ref: EngineSchemaRef, value: Any) {
+        val schema = catalog.schemas.singleOrNull { it.ref == ref }?.schema ?: throw IllegalArgumentException("Catalog schema ${ref.id} v${ref.version} is missing")
+        val violations = decoder.validateSchemaDocument(schema, value)
+        require(violations.isEmpty()) { "Value failed ${ref.id} v${ref.version}: ${violations.joinToString { "${it.path}: ${it.message}" }}" }
+    }
+
+    private fun validateQueryRow(catalog: EngineApplicationCatalog, ref: EngineSchemaRef, row: JSONObject) {
+        val schema = catalog.schemas.singleOrNull { it.ref == ref }?.schema ?: throw IllegalArgumentException("Catalog schema ${ref.id} v${ref.version} is missing")
+        val rowSchema = if (schema.optString("type") == "array") schema.optJSONObject("items")
+            ?: throw IllegalArgumentException("Published query array schema has no item schema") else schema
+        val violations = decoder.validateSchemaDocument(rowSchema, row)
+        require(violations.isEmpty()) { "Feed row failed ${ref.id} v${ref.version}: ${violations.joinToString { "${it.path}: ${it.message}" }}" }
+    }
+
+    suspend fun applyChanges(scope: Scope, owner: String, changes: JSONArray) = db.withTransaction {
+        for (i in 0 until changes.length()) {
+            val change = changes.getJSONObject(i)
+            val factKey = change.requiredString("fact_key")
+            val deleted = change.getBoolean("deleted")
+            val data = if (deleted) null else change.optJSONObject("data") ?: throw IllegalArgumentException("Feed change data must be an object")
+            dao.putFact(OfflineFactEntity(scope.key, owner, factKey, data?.let(::encode), deleted, System.currentTimeMillis()))
+        }
+    }
+
+    private fun Any.toJsonValue(): Any = when (this) {
+        is JSONObject, is JSONArray -> this
+        is Map<*, *> -> JSONObject(this)
+        is List<*> -> JSONArray(this)
+        else -> this
     }
 }

@@ -24,7 +24,7 @@ class KoraHttpClient(vault: SessionSecretStore) {
     private val cookies = SessionCookieJar(vault)
 
     suspend fun get(scope: Scope, path: String, query: Map<String, String> = emptyMap()): Any = request(scope, "GET", path, null, query)
-    suspend fun post(scope: Scope, path: String, body: JSONObject? = null, idempotencyKey: String? = null): Any = request(scope, "POST", path, body, idempotencyKey = idempotencyKey)
+    suspend fun post(scope: Scope, path: String, body: JSONObject? = null, idempotencyKey: String? = null, authorization: String? = null): Any = request(scope, "POST", path, body, idempotencyKey = idempotencyKey, authorization = authorization)
     suspend fun put(scope: Scope, path: String, body: JSONObject? = null, idempotencyKey: String? = null): Any = request(scope, "PUT", path, body, idempotencyKey = idempotencyKey)
     suspend fun delete(scope: Scope, path: String): Any = request(scope, "DELETE", path)
     suspend fun getResponse(scope: Scope, path: String, query: Map<String, String> = emptyMap()): KoraHttpResponse = requestResponse(scope, "GET", path, null, query)
@@ -32,9 +32,9 @@ class KoraHttpClient(vault: SessionSecretStore) {
     fun clearSession(scope: Scope) = cookies.clear(scope)
     fun bindAnonymousSession(from: Scope, to: Scope) = cookies.bindAnonymousSession(from, to)
 
-    private suspend fun request(scope: Scope, method: String, path: String, body: JSONObject? = null, query: Map<String, String> = emptyMap(), idempotencyKey: String? = null): Any = requestResponse(scope, method, path, body, query, idempotencyKey).body
+    private suspend fun request(scope: Scope, method: String, path: String, body: JSONObject? = null, query: Map<String, String> = emptyMap(), idempotencyKey: String? = null, authorization: String? = null): Any = requestResponse(scope, method, path, body, query, idempotencyKey, authorization).body
 
-    private suspend fun requestResponse(scope: Scope, method: String, path: String, body: JSONObject? = null, query: Map<String, String> = emptyMap(), idempotencyKey: String? = null): KoraHttpResponse = withContext(Dispatchers.IO) {
+    private suspend fun requestResponse(scope: Scope, method: String, path: String, body: JSONObject? = null, query: Map<String, String> = emptyMap(), idempotencyKey: String? = null, authorization: String? = null): KoraHttpResponse = withContext(Dispatchers.IO) {
         val uri = URI(scope.origin)
         val sitePath = scope.siteRef?.takeIf { it.isNotBlank() }?.let { "/s/${it.trim('/')}" }.orEmpty()
         val basePath = (uri.path.trimEnd('/') + sitePath).replace("//", "/").trimEnd('/')
@@ -49,6 +49,7 @@ class KoraHttpClient(vault: SessionSecretStore) {
             readTimeout = 25000
             setRequestProperty("Accept", "application/json")
             requestScopeHeaders(scope).forEach { (name, value) -> setRequestProperty(name, value) }
+            authorization?.let { setRequestProperty("Authorization", it) }
             idempotencyKey?.takeIf(String::isNotBlank)?.let { setRequestProperty("Idempotency-Key", it) }
             cookies.header(scope, encodedPath)?.let { setRequestProperty("Cookie", it) }
             if (method !in setOf("GET", "HEAD")) {

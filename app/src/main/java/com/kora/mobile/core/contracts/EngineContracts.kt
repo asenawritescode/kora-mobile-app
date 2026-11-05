@@ -38,6 +38,7 @@ data class EnginePublishedQuery(
     val offlineEligible: Boolean,
     val allowedFields: List<String>,
     val presentation: JSONObject,
+    val offlineFactKey: String?,
 )
 data class EnginePublishedProjection(
     val ownerModuleId: String,
@@ -68,6 +69,7 @@ data class EngineApplicationCatalog(
     val operations: List<EnginePublishedOperation>,
     val schemas: List<EngineSchemaDocument>,
     val allowedEntityChoices: List<BusinessScope>,
+    val availableScopes: List<BusinessScope>,
     val blockers: List<EngineCatalogBlocker>,
 )
 data class EngineWorkflowInstance(
@@ -80,6 +82,15 @@ data class EngineWorkflowInstance(
     val subjectId: String,
     val subjectType: String,
     val businessScope: BusinessScope?,
+)
+data class EngineWorkflowDefinitionRef(val id: String, val version: Int, val digest: String)
+
+data class EngineResponseReceipt(
+    val requestId: String,
+    val decisionId: String,
+    val revision: String,
+    val status: String,
+    val continuationState: String?,
 )
 
 fun JSONObject.requiredObject(key: String): JSONObject = optJSONObject(key) ?: throw IllegalArgumentException("$key must be an object")
@@ -129,9 +140,10 @@ fun EngineContractDecoder.decodeApplicationCatalog(json: String): EngineApplicat
     val schemaDocuments = array("schemas") { item -> EngineSchemaDocument(item.requiredObject("ref").asSchemaRef(), item.requiredObject("schema")) }
     val blockers = array("blockers") { item -> EngineCatalogBlocker(item.requiredString("code"), item.requiredInt("count")) }
     val entityChoices = value.optJSONArray("allowed_entity_choices") ?: throw IllegalArgumentException("allowed_entity_choices must be an array")
+    val availableScopes = value.optJSONArray("available_scopes") ?: JSONArray()
     val queryList = (0 until queries.length()).map { index ->
         val item = queries.getJSONObject(index)
-        EnginePublishedQuery(item.requiredString("owner_module_id"), item.requiredString("name"), item.requiredString("route"), item.requiredObject("input_schema").asSchemaRef(), item.requiredObject("output_schema").asSchemaRef(), item.requiredString("scope_policy"), item.requiredInt("page_limit"), item.optBoolean("offline_eligible"), item.strings("allowed_fields"), item.requiredObject("presentation"))
+        EnginePublishedQuery(item.requiredString("owner_module_id"), item.requiredString("name"), item.requiredString("route"), item.requiredObject("input_schema").asSchemaRef(), item.requiredObject("output_schema").asSchemaRef(), item.requiredString("scope_policy"), item.requiredInt("page_limit"), item.optBoolean("offline_eligible"), item.strings("allowed_fields"), item.requiredObject("presentation"), item.optString("offline_fact_key").takeIf(String::isNotBlank))
     }
     val projectionList = (0 until projections.length()).map { index ->
         val item = projections.getJSONObject(index)
@@ -142,13 +154,25 @@ fun EngineContractDecoder.decodeApplicationCatalog(json: String): EngineApplicat
         EnginePublishedOperation(item.requiredString("operation_ref"), item.requiredString("owner_module_id"), item.requiredObject("input_schema").asSchemaRef(), item.requiredObject("output_schema").asSchemaRef(), item.requiredString("availability"), item.optBoolean("offline_eligible"), item.optJSONObject("presentation") ?: JSONObject())
     }
     return EngineApplicationCatalog(value.getLong("revision"), value.requiredBusinessScope("business_scope"), modules, queryList, projectionList, operationList, schemaDocuments,
-        (0 until entityChoices.length()).map { entityChoices.getJSONObject(it).toBusinessScope() }, blockers)
+        (0 until entityChoices.length()).map { entityChoices.getJSONObject(it).toBusinessScope() },
+        (0 until availableScopes.length()).map { availableScopes.getJSONObject(it).toBusinessScope() }, blockers)
 }
 
 fun EngineContractDecoder.decodeWorkflowInstance(json: String): EngineWorkflowInstance {
     val value = decode("WorkflowInstance", json)
     val subject = value.requiredObject("subject")
     return EngineWorkflowInstance(value.requiredString("id"), value.requiredString("definition_id"), value.requiredInt("definition_version"), value.requiredString("current_step"), value.requiredString("status"), value.requiredString("revision"), subject.requiredString("id"), subject.requiredString("kind"), if (value.has("business_scope") && !value.isNull("business_scope")) value.requiredObject("business_scope").toBusinessScope() else null)
+}
+
+fun EngineContractDecoder.decodeWorkflowDefinitionRef(json: String): EngineWorkflowDefinitionRef {
+    val value = decode("WorkflowDefinitionRef", json)
+    return EngineWorkflowDefinitionRef(value.requiredString("definition_id"), value.requiredInt("version"), value.requiredString("digest"))
+}
+
+fun EngineContractDecoder.decodeResponseReceipt(json: String): EngineResponseReceipt {
+    val value = decode("ResponseReceipt", json)
+    val continuation = value.optJSONObject("continuation")
+    return EngineResponseReceipt(value.requiredString("request_id"), value.requiredString("decision_id"), value.requiredString("revision"), value.requiredString("status"), continuation?.optString("state")?.takeIf(String::isNotBlank))
 }
 
 private fun JSONObject.asSchemaRef() = EngineSchemaRef(requiredString("id"), requiredInt("version"))

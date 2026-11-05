@@ -1,9 +1,18 @@
 package com.kora.mobile.core.database
 
 import android.content.Context
-import androidx.room.*
-import androidx.room.migration.Migration
-import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.room.ColumnInfo
+import androidx.room.Dao
+import androidx.room.Database
+import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
+import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "local_entries", primaryKeys = ["scope_key", "entry_key"], indices = [Index(value = ["scope_key", "category"], name = "local_entries_category")])
@@ -15,45 +24,43 @@ data class LocalEntry(
     val category: String,
 )
 
-@Entity(tableName = "local_drafts", primaryKeys = ["scope_key", "id"])
-data class LocalDraft(
-    val id: String,
+/** Immutable, actor-scoped E4 command. The input and receipt are encrypted at rest. */
+@Entity(tableName = "offline_intents", primaryKeys = ["scope_key", "local_operation_id"], indices = [Index(value = ["scope_key", "created_at"], name = "offline_intents_order")])
+data class OfflineIntentEntity(
     @ColumnInfo(name = "scope_key") val scopeKey: String,
-    val doctype: String,
-    @ColumnInfo(name = "record_name") val recordName: String?,
-    @ColumnInfo(name = "payload") val encryptedPayload: String,
-    @ColumnInfo(name = "created_at") val createdAt: Long,
-    @ColumnInfo(name = "updated_at") val updatedAt: Long,
-)
-
-@Entity(tableName = "local_outbox", primaryKeys = ["scope_key", "id"], indices = [Index(value = ["scope_key", "created_at"], name = "local_outbox_order")])
-data class LocalMutation(
-    val id: String,
-    @ColumnInfo(name = "scope_key") val scopeKey: String,
-    val doctype: String,
-    @ColumnInfo(name = "record_name") val recordName: String?,
+    @ColumnInfo(name = "local_operation_id") val localOperationId: String,
     @ColumnInfo(name = "idempotency_key") val idempotencyKey: String,
-    @ColumnInfo(name = "payload") val encryptedPayload: String,
-    @ColumnInfo(name = "created_at") val createdAt: Long,
-    @ColumnInfo(name = "display_name") val displayName: String? = null,
-    @ColumnInfo(defaultValue = "'queued'") val status: String = "queued",
+    @ColumnInfo(name = "business_scope") val businessScope: String,
+    @ColumnInfo(name = "catalog_revision") val catalogRevision: Long,
+    @ColumnInfo(name = "operation_ref") val operationRef: String,
+    @ColumnInfo(name = "input_schema") val inputSchema: String,
+    @ColumnInfo(name = "encrypted_input") val encryptedInput: String,
+    @ColumnInfo(name = "expected_revision") val expectedRevision: String?,
+    val status: String = "queued",
+    @ColumnInfo(name = "receipt") val encryptedReceipt: String? = null,
     @ColumnInfo(name = "last_error") val lastError: String? = null,
-    @ColumnInfo(name = "local_id") val localId: String? = null,
-    @ColumnInfo(name = "base_revision") val baseRevision: String? = null,
-    @ColumnInfo(defaultValue = "0") val attempts: Int = 0,
-    @ColumnInfo(name = "next_attempt_at", defaultValue = "0") val nextAttemptAt: Long = 0,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
 )
 
-@Entity(tableName = "local_records", primaryKeys = ["scope_key", "doctype", "local_id"], indices = [Index(value = ["scope_key", "doctype", "server_id"], unique = true)])
-data class LocalRecord(
+/** Feed facts remain separate from pending commands and optimistic changes. */
+@Entity(tableName = "offline_facts", primaryKeys = ["scope_key", "owner_module_id", "fact_key"], indices = [Index(value = ["scope_key", "owner_module_id"], name = "offline_facts_owner")])
+data class OfflineFactEntity(
     @ColumnInfo(name = "scope_key") val scopeKey: String,
-    val doctype: String,
-    @ColumnInfo(name = "local_id") val localId: String,
-    @ColumnInfo(name = "server_id") val serverId: String?,
-    @ColumnInfo(name = "payload") val encryptedPayload: String,
-    @ColumnInfo(name = "server_payload") val encryptedServerPayload: String?,
-    @ColumnInfo(name = "server_revision") val serverRevision: String?,
+    @ColumnInfo(name = "owner_module_id") val ownerModuleId: String,
+    @ColumnInfo(name = "fact_key") val factKey: String,
+    @ColumnInfo(name = "encrypted_data") val encryptedData: String?,
+    val deleted: Boolean,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
+)
+
+@Entity(tableName = "offline_checkpoints", primaryKeys = ["scope_key", "owner_module_id", "query_name", "input_hash"])
+data class OfflineCheckpointEntity(
+    @ColumnInfo(name = "scope_key") val scopeKey: String,
+    @ColumnInfo(name = "owner_module_id") val ownerModuleId: String,
+    @ColumnInfo(name = "query_name") val queryName: String,
+    @ColumnInfo(name = "input_hash") val inputHash: String,
+    @ColumnInfo(name = "encrypted_checkpoint") val encryptedCheckpoint: String,
+    @ColumnInfo(name = "catalog_revision") val catalogRevision: Long,
 )
 
 @Dao
@@ -65,64 +72,29 @@ abstract class LocalDao {
     @Query("DELETE FROM local_entries WHERE scope_key=:scope AND category=:category") abstract suspend fun deleteEntries(scope: String, category: String)
     @Query("DELETE FROM local_entries WHERE scope_key=:scope AND entry_key=:key") abstract suspend fun deleteEntry(scope: String, key: String)
     @Query("DELETE FROM local_entries WHERE scope_key=:scope") abstract suspend fun clearScope(scope: String)
-    @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun putDraft(draft: LocalDraft)
-    @Query("SELECT * FROM local_drafts WHERE scope_key=:scope ORDER BY updated_at DESC") abstract fun observeDrafts(scope: String): Flow<List<LocalDraft>>
-    @Query("SELECT * FROM local_drafts WHERE scope_key=:scope AND id=:id") abstract suspend fun getDraft(scope: String, id: String): LocalDraft?
-    @Query("DELETE FROM local_drafts WHERE scope_key=:scope AND id=:id") abstract suspend fun deleteDraft(scope: String, id: String)
-    @Query("DELETE FROM local_drafts WHERE scope_key=:scope") abstract suspend fun clearDrafts(scope: String)
-    @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun putMutation(mutation: LocalMutation)
-    @Query("SELECT * FROM local_outbox WHERE scope_key=:scope AND status NOT IN ('acked','discarded') ORDER BY created_at, rowid") abstract fun observeMutations(scope: String): Flow<List<LocalMutation>>
-    @Query("SELECT * FROM local_outbox WHERE scope_key=:scope AND status NOT IN ('acked','discarded') ORDER BY created_at, rowid") abstract suspend fun queuedMutations(scope: String): List<LocalMutation>
-    @Query("SELECT * FROM local_outbox WHERE scope_key=:scope AND id=:id") abstract suspend fun mutation(scope: String, id: String): LocalMutation?
-    @Query("DELETE FROM local_outbox WHERE scope_key=:scope AND id=:id") abstract suspend fun deleteMutation(scope: String, id: String)
-    @Query("SELECT * FROM local_records WHERE scope_key=:scope AND doctype=:doctype ORDER BY updated_at DESC, local_id") abstract suspend fun records(scope: String, doctype: String): List<LocalRecord>
-    @Query("SELECT * FROM local_records WHERE scope_key=:scope AND doctype=:doctype ORDER BY updated_at DESC, local_id") abstract fun observeRecords(scope: String, doctype: String): Flow<List<LocalRecord>>
-    @Query("SELECT * FROM local_records WHERE scope_key=:scope AND doctype=:doctype AND (local_id=:id OR server_id=:id) LIMIT 1") abstract suspend fun record(scope: String, doctype: String, id: String): LocalRecord?
-    @Query("SELECT * FROM local_records WHERE scope_key=:scope AND local_id=:id LIMIT 1") abstract suspend fun recordByLocalId(scope: String, id: String): LocalRecord?
-    @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun putRecord(record: LocalRecord)
-    @Query("DELETE FROM local_records WHERE scope_key=:scope AND doctype=:doctype AND local_id=:id") abstract suspend fun deleteRecord(scope: String, doctype: String, id: String)
 
-    @Transaction
-    open suspend fun commitLocal(record: LocalRecord, mutation: LocalMutation, draftId: String?) {
-        putRecord(record)
-        putMutation(mutation)
-        if (draftId != null) deleteDraft(record.scopeKey, draftId)
-    }
+    @Insert(onConflict = OnConflictStrategy.ABORT) abstract suspend fun insertIntent(intent: OfflineIntentEntity)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun putIntent(intent: OfflineIntentEntity)
+    @Query("SELECT * FROM offline_intents WHERE scope_key=:scope AND status IN ('queued','sent','accepted','outcome_unknown') ORDER BY created_at, local_operation_id") abstract suspend fun pendingIntents(scope: String): List<OfflineIntentEntity>
+    @Query("SELECT * FROM offline_intents WHERE scope_key=:scope AND local_operation_id=:id") abstract suspend fun intent(scope: String, id: String): OfflineIntentEntity?
+    @Query("SELECT * FROM offline_intents WHERE scope_key=:scope ORDER BY created_at, local_operation_id") abstract fun observeIntents(scope: String): Flow<List<OfflineIntentEntity>>
+    @Query("DELETE FROM offline_intents WHERE scope_key=:scope AND local_operation_id=:id") abstract suspend fun deleteIntent(scope: String, id: String)
 
-    @Transaction
-    open suspend fun acknowledge(record: LocalRecord?, mutation: LocalMutation) {
-        if (record != null) putRecord(record)
-        putMutation(mutation.copy(status = "acked", lastError = null))
-        // Never delete a newer draft created while an earlier operation was syncing.
-    }
+    @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun putFact(fact: OfflineFactEntity)
+    @Query("SELECT * FROM offline_facts WHERE scope_key=:scope AND owner_module_id=:owner AND deleted=0 ORDER BY fact_key") abstract suspend fun facts(scope: String, owner: String): List<OfflineFactEntity>
+    @Query("SELECT * FROM offline_facts WHERE scope_key=:scope AND owner_module_id=:owner ORDER BY fact_key") abstract fun observeFacts(scope: String, owner: String): Flow<List<OfflineFactEntity>>
+    @Query("DELETE FROM offline_facts WHERE scope_key=:scope AND owner_module_id=:owner") abstract suspend fun clearFacts(scope: String, owner: String)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun putCheckpoint(checkpoint: OfflineCheckpointEntity)
+    @Query("SELECT * FROM offline_checkpoints WHERE scope_key=:scope AND owner_module_id=:owner AND query_name=:query AND input_hash=:hash") abstract suspend fun checkpoint(scope: String, owner: String, query: String, hash: String): OfflineCheckpointEntity?
 }
 
-@Database(entities = [LocalEntry::class, LocalDraft::class, LocalMutation::class, LocalRecord::class], version = 4, exportSchema = false)
+@Database(entities = [LocalEntry::class, OfflineIntentEntity::class, OfflineFactEntity::class, OfflineCheckpointEntity::class], version = 1, exportSchema = false)
 abstract class KoraDatabase : RoomDatabase() {
     abstract val localDao: LocalDao
     companion object {
         @Volatile private var instance: KoraDatabase? = null
-        val MIGRATION_1_4 = migration(1)
-        val MIGRATION_2_4 = migration(2)
-        val MIGRATION_3_4 = migration(3)
-        private fun migration(from: Int) = object : Migration(from, 4) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                if (from < 2) db.execSQL("CREATE TABLE IF NOT EXISTS local_outbox (id TEXT NOT NULL, scope_key TEXT NOT NULL, doctype TEXT NOT NULL, record_name TEXT, idempotency_key TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, display_name TEXT, PRIMARY KEY(scope_key,id))")
-                if (from == 2) db.execSQL("ALTER TABLE local_outbox ADD COLUMN display_name TEXT")
-                db.execSQL("CREATE INDEX IF NOT EXISTS local_outbox_order ON local_outbox(scope_key,created_at)")
-                db.execSQL("ALTER TABLE local_outbox ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'")
-                db.execSQL("ALTER TABLE local_outbox ADD COLUMN last_error TEXT")
-                db.execSQL("ALTER TABLE local_outbox ADD COLUMN local_id TEXT")
-                db.execSQL("ALTER TABLE local_outbox ADD COLUMN base_revision TEXT")
-                db.execSQL("ALTER TABLE local_outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE local_outbox ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("CREATE TABLE IF NOT EXISTS local_records (scope_key TEXT NOT NULL, doctype TEXT NOT NULL, local_id TEXT NOT NULL, server_id TEXT, payload TEXT NOT NULL, server_payload TEXT, server_revision TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(scope_key,doctype,local_id))")
-                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_records_scope_key_doctype_server_id ON local_records(scope_key,doctype,server_id)")
-            }
-        }
         fun get(context: Context): KoraDatabase = instance ?: synchronized(this) {
-            instance ?: Room.databaseBuilder(context.applicationContext, KoraDatabase::class.java, "kora_mobile.db")
-                .addMigrations(MIGRATION_1_4, MIGRATION_2_4, MIGRATION_3_4).build().also { instance = it }
+            instance ?: Room.databaseBuilder(context.applicationContext, KoraDatabase::class.java, "kora_mobile_v2.db").build().also { instance = it }
         }
     }
 }

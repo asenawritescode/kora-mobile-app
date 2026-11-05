@@ -2,10 +2,9 @@ package com.kora.mobile.data
 
 import com.kora.mobile.core.database.LocalDao
 import com.kora.mobile.core.database.LocalEntry
-import com.kora.mobile.core.database.LocalMutation
+import com.kora.mobile.core.database.OfflineIntentEntity
 import com.kora.mobile.core.database.KoraDatabase
 import com.kora.mobile.data.offline.OfflineRecordRepository
-import com.kora.mobile.data.offline.OfflineCoverage
 import com.kora.mobile.data.offline.RestRecordDataSource
 import com.kora.mobile.core.network.KoraHttpClient
 import com.kora.mobile.core.contracts.EngineApplicationCatalog
@@ -18,6 +17,12 @@ import com.kora.mobile.core.contracts.EngineQueryPage
 import com.kora.mobile.core.contracts.decodeApplicationCatalog
 import com.kora.mobile.core.contracts.decodeOperationReceipt
 import com.kora.mobile.core.contracts.decodeQueryPage
+import com.kora.mobile.core.contracts.EngineResponseReceipt
+import com.kora.mobile.core.contracts.EngineWorkflowInstance
+import com.kora.mobile.core.contracts.EngineWorkflowDefinitionRef
+import com.kora.mobile.core.contracts.decodeResponseReceipt
+import com.kora.mobile.core.contracts.decodeWorkflowInstance
+import com.kora.mobile.core.contracts.decodeWorkflowDefinitionRef
 import com.kora.mobile.core.security.PayloadCipher
 import com.kora.mobile.domain.model.Scope
 import kotlinx.coroutines.flow.Flow
@@ -25,8 +30,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
 import org.json.JSONObject
@@ -34,15 +37,11 @@ import org.json.JSONTokener
 
 class WorkspaceRepository(private val http: KoraHttpClient, private val db: KoraDatabase, private val vault: PayloadCipher, private val decoder: EngineContractDecoder, private val canSync: (Scope) -> Boolean = { true }) {
     private val dao = db.localDao
-    val localRecords = OfflineRecordRepository(db, vault, RestRecordDataSource(http), canSync = canSync)
+    val localRecords = OfflineRecordRepository(db, vault, RestRecordDataSource(http), decoder, canSync = canSync)
     private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val refreshJobs = ConcurrentHashMap<String, Job>()
     private val _offline = MutableStateFlow(false)
     val offline: StateFlow<Boolean> = _offline
-    private val _coverage = MutableStateFlow(OfflineCoverage())
-    val coverage: StateFlow<OfflineCoverage> = _coverage
-    @Volatile private var coverageScopeKey: String? = null
-    private val downloadMutex = Mutex()
     var networkAvailable = true
     fun markNetworkUnavailable() { networkAvailable = false; _offline.value = true }
     private suspend fun <T> network(block: suspend () -> T): T = try {
@@ -65,92 +64,12 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
 
     suspend fun probe(scope: Scope) { http.get(scope, "/api/ping") }
 
-    suspend fun restoreCoverage(scope: Scope) {
-        coverageScopeKey = scope.key
-        val completed = dao.getEntry(scope.key, "offline-prepared")
-        if (coverageScopeKey == scope.key) _coverage.value = OfflineCoverage(completedAt = completed?.fetchedAt)
-    }
-
-    fun activateCoverageScope(scope: Scope?) {
-        coverageScopeKey = scope?.key
-        _coverage.value = OfflineCoverage()
-    }
-
-    suspend fun prepareOffline(scope: Scope) = downloadMutex.withLock {
-        coverageScopeKey = scope.key
-        _coverage.value = _coverage.value.copy(downloading = true, error = null)
-        try {
-            val generation = network { localRecords.capabilities(scope) }.optLong("generation", -1)
-            if (generation < 0) throw com.kora.mobile.domain.model.KoraError("invalid_capabilities", "Kora did not identify the workspace configuration")
-            suspend fun store(key: String, category: String, fetch: suspend () -> Any): Any {
-                val result = network(fetch)
-                dao.putEntry(LocalEntry(scope.key, key, vault.encrypt(result.toString()), System.currentTimeMillis(), category))
-                return result
-            }
-            val rawTypes = network { http.get(scope, "/api/v1/system/navigation") as? JSONObject ?: JSONObject() }
-            val types = linkedMapOf<String, String>()
-            val modules = rawTypes.optJSONArray("modules") ?: JSONArray()
-            for (i in 0 until modules.length()) {
-                val docs = modules.optJSONObject(i)?.optJSONArray("doctypes") ?: JSONArray()
-                for (j in 0 until docs.length()) {
-                    val item = docs.optJSONObject(j) ?: continue
-                    val name = item.optString("name").takeIf(String::isNotBlank) ?: continue
-                    types[name] = item.optString("resource_name").ifBlank { name }
-                }
-            }
-            updateCoverage(scope) { OfflineCoverage(downloading = true, totalTypes = types.size) }
-            val schemas = mutableSetOf<String>()
-            fun routeFor(type: String) = types[type] ?: type.lowercase().replace(' ', '-')
-            suspend fun downloadSchema(type: String): JSONObject {
-                val route = routeFor(type)
-                return store("schema:$route", "schema") { http.get(scope, "/api/v1/system/doctype/$route") } as JSONObject
-            }
-            val dependencies = ArrayDeque<Pair<String, Boolean>>()
-            fun collectDependencies(schema: JSONObject) {
-                val fields = schema.optJSONArray("fields") ?: schema.optJSONObject("doctype")?.optJSONArray("fields") ?: JSONArray()
-                for (i in 0 until fields.length()) fields.optJSONObject(i)?.let { field ->
-                    if (!field.optBoolean("hidden") && field.optString("fieldtype") in setOf("Table", "Link")) {
-                        field.optString("options").takeIf(String::isNotBlank)?.let { dependencies.add(it to (field.optString("fieldtype") == "Table")) }
-                    }
-                }
-            }
-            suspend fun manifest(page: String) {
-                try { store("page-manifest:$page", "navigation") { http.get(scope, "/api/v1/page-manifests", mapOf("route" to page)) } }
-                catch (error: com.kora.mobile.domain.model.KoraError) { if (error.status != 404) throw error }
-            }
-            for ((name, _) in types) {
-                val schema = downloadSchema(name)
-                schemas += name
-                collectDependencies(schema)
-                val page = "/" + name.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
-                manifest(page)
-                updateCoverage(scope) { it.copy(completedTypes = it.completedTypes + 1) }
-            }
-            while (dependencies.isNotEmpty()) {
-                val (child, isTable) = dependencies.removeFirst()
-                if (!schemas.add(child)) continue
-                val schema = downloadSchema(child)
-                collectDependencies(schema)
-                if (!isTable) types[child] = routeFor(child)
-            }
-            if (types.keys.any { it.equals("Product", true) }) manifest("/pos")
-            network { localRecords.bootstrap(scope, types, generation) }
-            val completed = System.currentTimeMillis()
-            dao.putEntry(LocalEntry(scope.key, "offline-prepared", vault.encrypt(types.values.joinToString(",")), completed, "coverage"))
-            updateCoverage(scope) { it.copy(downloading = false, completedAt = completed) }
-        } catch (cancelled: CancellationException) { updateCoverage(scope) { it.copy(downloading = false) }; throw cancelled }
-        catch (error: Exception) { updateCoverage(scope) { it.copy(downloading = false, error = error.message ?: "Download interrupted") } }
-    }
-
-    private inline fun updateCoverage(scope: Scope, transform: (OfflineCoverage) -> OfflineCoverage) {
-        if (coverageScopeKey == scope.key) _coverage.value = transform(_coverage.value)
-    }
-
     /** Actor-filtered capabilities are the only source for module-owned workspace surfaces. */
     suspend fun publishedCatalog(scope: Scope): EngineApplicationCatalog {
         val response = network { http.getResponse(scope, "/api/v2/modules/catalog") }
         val catalog = decoder.decodeApplicationCatalog(response.body.toString())
         require(catalog.businessScope == scope.businessScope) { "Engine catalog scope does not match the active workspace" }
+        localRecords.rememberCatalog(scope, catalog)
         return catalog
     }
 
@@ -216,6 +135,20 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
         }
     }
 
+    suspend fun queuePublishedIntent(scope: Scope, catalog: EngineApplicationCatalog, operation: EnginePublishedOperation, input: Any, idempotencyKey: String): String =
+        enqueuePublishedIntent(scope, catalog, operation, input, idempotencyKey)
+
+    suspend fun syncPublishedIntents(scope: Scope, catalog: EngineApplicationCatalog) = localRecords.sync(scope, catalog)
+    suspend fun syncPublishedIntents(scope: Scope) = localRecords.observeCatalogThenSync(scope)
+    suspend fun bootstrapPublishedFeed(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any, limit: Int? = null): JSONObject =
+        localRecords.bootstrap(scope, catalog, query, input, limit)
+    suspend fun pullPublishedFeed(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any, checkpoint: JSONObject, limit: Int = 100): JSONObject =
+        localRecords.pull(scope, catalog, query, input, checkpoint, limit)
+    suspend fun savedPublishedFeedCheckpoint(scope: Scope, catalog: EngineApplicationCatalog, query: EnginePublishedQuery, input: Any): JSONObject? =
+        localRecords.savedCheckpoint(scope, catalog, query, input)
+    suspend fun hasPendingPublishedIntents(scope: Scope): Boolean = localRecords.hasPending(scope)
+    fun observePublishedIntents(scope: Scope): Flow<List<OfflineIntentEntity>> = localRecords.observeIntents(scope)
+
     private fun validatePublishedValue(catalog: EngineApplicationCatalog, ref: com.kora.mobile.core.contracts.EngineSchemaRef, value: Any) {
         val document = catalog.schemas.singleOrNull { it.ref == ref }?.schema
             ?: throw IllegalArgumentException("The actor catalog did not publish schema ${ref.id} v${ref.version}")
@@ -223,10 +156,19 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
         if (violations.isNotEmpty()) throw IllegalArgumentException("Published value failed ${ref.id} v${ref.version}: ${violations.joinToString { "${it.path}: ${it.message}" }}")
     }
 
-    suspend fun login(scope: Scope, email: String, password: String) {
-        http.get(scope, "/api/auth/providers")
-        http.post(scope, "/api/auth/login", JSONObject().put("email", email).put("password", password))
-        http.get(scope, "/api/auth/me")
+    suspend fun requestMagicLink(scope: Scope, email: String) {
+        require(email.isNotBlank()) { "Enter your email address" }
+        // This endpoint is anonymous and rate limited. A bearer header selects
+        // the Engine API client's documented CSRF path; it does not authenticate
+        // or grant access to the account.
+        val requestMarker = java.util.UUID.randomUUID().toString()
+        http.post(scope, "/api/auth/magic-link/request", JSONObject().put("email", email.trim()), authorization = "Bearer $requestMarker")
+    }
+
+    suspend fun verifyMagicLink(scope: Scope, token: String): JSONObject {
+        require(token.isNotBlank())
+        http.post(scope, "/api/auth/magic-link/verify", JSONObject().put("token", token), authorization = "Bearer $token")
+        return currentUser(scope)
     }
 
     suspend fun currentUser(scope: Scope): JSONObject = network { http.get(scope, "/api/auth/me") as? JSONObject ?: JSONObject() }
@@ -238,40 +180,12 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
     suspend fun pageManifest(scope: Scope, route: String): JSONObject = cached(scope, "page-manifest:$route", "navigation") {
         http.get(scope, "/api/v1/page-manifests", mapOf("route" to route)) as? JSONObject ?: JSONObject()
     } as? JSONObject ?: JSONObject()
-    suspend fun executeViewAction(scope: Scope, actionId: String, view: String, component: String, context: JSONObject, idempotencyKey: String? = null): JSONObject {
-        return http.post(scope, "/api/v1/view/action/$actionId", JSONObject()
-            .put("view", view).put("component", component).put("context", context), idempotencyKey) as? JSONObject ?: JSONObject()
-    }
     suspend fun records(scope: Scope, doctype: String): JSONArray {
-        val local = localRecords.records(scope, doctype)
-        if (localRecords.isCovered(scope, doctype)) {
-            refresh("${scope.key}:pull") { localRecords.pull(scope) }
-            return local
-        }
-        if (local.length() > 0 || dao.getEntry(scope.key, "records-downloaded:$doctype") != null || dao.getEntry(scope.key, "records:$doctype") != null) {
-            refresh("${scope.key}:records:$doctype") { localRecords.refresh(scope, doctype) }
-            return local
-        }
-        network { localRecords.refresh(scope, doctype) }
-        return localRecords.records(scope, doctype)
+        throw IllegalStateException("Legacy DocType records are unavailable. Load a published module query instead.")
     }
-    fun observeRecords(scope: Scope, doctype: String): Flow<List<JSONObject>> = localRecords.observeRecords(scope, doctype)
+    fun observeRecords(scope: Scope, doctype: String): Flow<List<JSONObject>> = kotlinx.coroutines.flow.flowOf(emptyList())
     suspend fun record(scope: Scope, doctype: String, name: String): JSONObject {
-        val local = localRecords.record(scope, doctype, name)
-        if (localRecords.isCovered(scope, doctype)) {
-            if (local != null) {
-                refresh("${scope.key}:pull") { localRecords.pull(scope) }
-                return local
-            }
-            network { localRecords.pull(scope) }
-            return localRecords.record(scope, doctype, name) ?: throw IllegalStateException("Record not available on this device")
-        }
-        if (local != null) {
-            refresh("${scope.key}:record:$doctype:$name") { localRecords.refreshRecord(scope, doctype, name) }
-            return local
-        }
-        network { localRecords.refreshRecord(scope, doctype, name) }
-        return localRecords.record(scope, doctype, name) ?: throw IllegalStateException("Record not available on this device")
+        throw IllegalStateException("Legacy DocType records are unavailable. Load a published module query instead.")
     }
     suspend fun userDirectory(scope: Scope, names: List<String>): JSONArray {
         if (names.isEmpty()) return JSONArray()
@@ -286,7 +200,63 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
         return response as? JSONArray ?: JSONArray()
     }
     suspend fun schema(scope: Scope, doctype: String): JSONObject = cached(scope, "schema:$doctype", "schema") { http.get(scope, "/api/v1/system/doctype/$doctype") as? JSONObject ?: JSONObject() } as? JSONObject ?: JSONObject()
-    suspend fun requests(scope: Scope): JSONObject = cached(scope, "requests", "requests") { http.get(scope, "/api/v2/requests", mapOf("view" to "needs_action", "kind" to "task", "limit" to "25", "overdue_only" to "false")) as? JSONObject ?: JSONObject() } as? JSONObject ?: JSONObject()
+    suspend fun requests(scope: Scope): JSONObject = cached(scope, "requests", "requests") { http.get(scope, "/api/v2/requests", mapOf("view" to "needs_action", "limit" to "25", "overdue_only" to "false")) as? JSONObject ?: JSONObject() } as? JSONObject ?: JSONObject()
+
+    suspend fun respondToRequest(scope: Scope, requestId: String, assignmentId: String, expectedRevision: String, response: String, comment: String = "", idempotencyKey: String): EngineResponseReceipt {
+        require(idempotencyKey.isNotBlank() && expectedRevision.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey).put("expected_revision", expectedRevision))
+            .put("assignment_id", assignmentId).put("response", response).put("comment", comment)
+        val result = network { http.postResponse(scope, "/api/v2/requests/${pathSegment(requestId)}/responses", body, idempotencyKey) }
+        return decoder.decodeResponseReceipt(result.body.toString())
+    }
+
+    suspend fun workflowInstances(scope: Scope): List<EngineWorkflowInstance> {
+        val result = network { http.getResponse(scope, "/api/v2/workflow-instances") }
+        val rows = when (val body = result.body) {
+            is JSONArray -> body
+            is JSONObject -> body.optJSONArray("items") ?: JSONArray()
+            else -> JSONArray()
+        }
+        return (0 until rows.length()).map { decoder.decodeWorkflowInstance(rows.getJSONObject(it).toString()) }
+    }
+
+    suspend fun workflowDefinitions(scope: Scope): List<EngineWorkflowDefinitionRef> {
+        val result = network { http.getResponse(scope, "/api/v2/workflow-definitions") }
+        val rows = result.body as? JSONArray ?: JSONArray()
+        return (0 until rows.length()).map { decoder.decodeWorkflowDefinitionRef(rows.getJSONObject(it).toString()) }
+    }
+
+    suspend fun startWorkflow(scope: Scope, definitionId: String, version: Int, subjectType: String, subjectId: String, idempotencyKey: String): EngineWorkflowInstance {
+        require(definitionId.isNotBlank() && version > 0 && subjectType.isNotBlank() && subjectId.isNotBlank() && idempotencyKey.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey))
+            .put("definition_id", definitionId).put("definition_version", version)
+            .put("subject", JSONObject().put("kind", subjectType).put("id", subjectId))
+            .put("business_scope", JSONObject().put("tenant_id", scope.businessScope.tenantId).put("kind", scope.businessScope.kind).apply {
+                scope.businessScope.legalEntityId?.let { put("legal_entity_id", it) }
+            })
+        val result = network { http.postResponse(scope, "/api/v2/workflow-instances", body, idempotencyKey) }
+        return decoder.decodeWorkflowInstance(result.body.toString())
+    }
+
+    suspend fun workflowHistory(scope: Scope, id: String): JSONArray =
+        (network { http.getResponse(scope, "/api/v2/workflow-instances/${pathSegment(id)}/history") }.body as? JSONArray) ?: JSONArray()
+
+    suspend fun reconcileWorkflow(scope: Scope, id: String, expectedRevision: String, stepId: String, outcome: String, evidenceRef: String, reason: String, idempotencyKey: String): EngineWorkflowInstance {
+        require(idempotencyKey.isNotBlank() && expectedRevision.isNotBlank() && evidenceRef.isNotBlank() && reason.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey).put("expected_revision", expectedRevision))
+            .put("step_id", stepId).put("outcome", outcome).put("evidence_ref", evidenceRef).put("reason", reason)
+        val result = network { http.postResponse(scope, "/api/v2/workflow-instances/${pathSegment(id)}/reconcile", body, idempotencyKey) }
+        return decoder.decodeWorkflowInstance(result.body.toString())
+    }
+
+    suspend fun cancelWorkflow(scope: Scope, id: String, expectedRevision: String, reason: String, idempotencyKey: String): EngineWorkflowInstance {
+        require(idempotencyKey.isNotBlank() && expectedRevision.isNotBlank() && reason.isNotBlank())
+        val body = JSONObject().put("meta", JSONObject().put("idempotency_key", idempotencyKey).put("expected_revision", expectedRevision)).put("reason", reason)
+        val result = network { http.postResponse(scope, "/api/v2/workflow-instances/${pathSegment(id)}/cancel", body, idempotencyKey) }
+        return decoder.decodeWorkflowInstance(result.body.toString())
+    }
+
+    private fun pathSegment(value: String) = java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
     suspend fun analyticsCatalog(scope: Scope): JSONObject = cached(scope, "analytics:catalog", "reports") {
         http.get(scope, "/api/v1/analytics/catalog") as? JSONObject ?: JSONObject()
@@ -327,73 +297,7 @@ class WorkspaceRepository(private val http: KoraHttpClient, private val db: Kora
         return fetchAndStore()
     }
 
-    // Legacy draft rows are removed when a workspace opens. Submitted offline records use the outbox.
-    suspend fun clearDrafts(scope: Scope) = dao.clearDrafts(scope.key)
-    suspend fun submitRecord(scope: Scope, doctype: String, recordName: String?, payload: JSONObject, idempotencyKey: String) {
-        enqueueRecord(scope, doctype, recordName, payload, idempotencyKey, null)
-    }
-
-    fun queuedMutations(scope: Scope): Flow<List<LocalMutation>> = dao.observeMutations(scope.key).map { rows -> rows.map(::withDisplayName) }
-
-    suspend fun enqueueRecord(scope: Scope, doctype: String, recordName: String?, payload: JSONObject, idempotencyKey: String, displayName: String?, draftId: String? = null) {
-        localRecords.save(scope, doctype, recordName, payload, idempotencyKey, displayName, draftId ?: "$doctype:${recordName ?: "new"}")
-    }
-
-    private fun withDisplayName(mutation: LocalMutation): LocalMutation {
-        if (!mutation.displayName.isNullOrBlank()) return mutation
-        val payload = vault.decrypt(mutation.encryptedPayload)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return mutation
-        val displayName = listOf("title", "product_name", "reference", "customer_name", "supplier_name", "name")
-            .firstNotNullOfOrNull { key -> payload.optString(key).takeIf(String::isNotBlank) }
-        return mutation.copy(displayName = displayName)
-    }
-
-    suspend fun copyMutation(mutation: LocalMutation, targetScopeKey: String) {
-        dao.putMutation(mutation.copy(scopeKey = targetScopeKey))
-    }
-    suspend fun deleteMutation(scope: Scope, id: String) {
-        dao.deleteMutation(scope.key, id)
-    }
-    suspend fun moveQueuedMutations(from: Scope, to: Scope): Int {
-        if (from.key == to.key) return 0
-        val rows = dao.queuedMutations(from.key)
-        rows.forEach { dao.putMutation(it.copy(scopeKey = to.key)) }
-        rows.forEach { dao.deleteMutation(from.key, it.id) }
-        return rows.size
-    }
-
-    suspend fun enqueueViewAction(scope: Scope, actionId: String, request: JSONObject, idempotencyKey: String, recordType: String = "sale", projection: JSONObject? = null, effect: JSONObject? = null, draftId: String? = null) {
-        val context = request.optJSONObject("context") ?: JSONObject()
-        localRecords.saveAction(scope, actionId, request, idempotencyKey, recordType, projection ?: JSONObject(context.toString()).put("items", context.optJSONArray("cart") ?: JSONArray()), effect, draftId)
-    }
-
-    suspend fun syncQueuedRecords(scope: Scope, force: Boolean = false): Pair<Int, Exception?> {
-        if (!canSync(scope)) return 0 to com.kora.mobile.domain.model.KoraError("actor_changed", "Sign in again to sync this workspace", 401)
-        if (dao.queuedMutations(scope.key).isEmpty() && !localRecords.hasPullCursor(scope)) return 0 to null
-        try {
-            val user = currentUser(scope)
-            if (user.optString("name") != scope.userId) return 0 to com.kora.mobile.domain.model.KoraError("actor_changed", "Sign in again to sync this workspace", 401)
-        } catch (cancelled: CancellationException) { throw cancelled }
-        catch (error: Exception) { return 0 to error }
-        val result = localRecords.sync(scope, force)
-        var pullError: Exception? = null
-        if (localRecords.hasPullCursor(scope)) {
-            try { network { localRecords.pull(scope) } }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { pullError = error }
-        }
-        if ((pullError as? com.kora.mobile.domain.model.KoraError)?.code == "offline.rebootstrap_required") {
-            prepareOffline(scope)
-            pullError = _coverage.value.error?.let { com.kora.mobile.domain.model.KoraError("offline.rebootstrap_required", it, 409) }
-            if (pullError == null) {
-                try { network { localRecords.pull(scope) } }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (error: Exception) { pullError = error }
-            }
-        }
-        if (result.error == null && pullError == null) _offline.value = false
-        else if ((result.error as? com.kora.mobile.domain.model.KoraError)?.retryable == true) _offline.value = true
-        val error = if (result.retryAt != null) com.kora.mobile.domain.model.KoraError("retry_scheduled", "Saved changes will retry automatically", retryable = true) else result.error ?: pullError
-        return result.acknowledged to error
-    }
+    suspend fun enqueuePublishedIntent(scope: Scope, catalog: EngineApplicationCatalog, operation: EnginePublishedOperation, input: Any, idempotencyKey: String, expectedRevision: String? = null): String =
+        localRecords.enqueue(scope, catalog, operation, input, idempotencyKey, expectedRevision)
 
 }
