@@ -1,0 +1,18 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Product"
+- waitForAnimationToEnd
+- tapOn: "Select"
+- waitForAnimationToEnd
+- assertVisible: "Select all"
+- takeScreenshot: selection-mode-empty
+- tapOn: "Select all"
+- assertVisible: "2 selected"
+- assertVisible: "Duplicate"
+- assertVisible: "Delete"
+- takeScreenshot: selection-mode-selected
+- tapOn: "Cancel"

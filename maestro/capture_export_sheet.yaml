@@ -1,0 +1,13 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Product"
+- waitForAnimationToEnd
+- tapOn: "Export current view"
+- waitForAnimationToEnd
+- assertVisible: "CSV"
+- assertVisible: "Excel"
+- assertVisible: "PDF"

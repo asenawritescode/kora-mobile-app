@@ -1,0 +1,14 @@
+appId: com.kora.mobile
+---
+- tapOn: Browse
+- waitForAnimationToEnd
+- assertVisible: Ticket
+- tapOn: Ticket
+- waitForAnimationToEnd
+- tapOn: + New
+- waitForAnimationToEnd
+- assertVisible: Assignee
+- tapOn: Choose assignee
+- waitForAnimationToEnd
+- assertVisible: Administrator
+- assertVisible: John Doe

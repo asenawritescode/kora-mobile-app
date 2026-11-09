@@ -1,0 +1,11 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Appearance: site"
+- tapOn: "Light"
+- pressKey: BACK
+- waitForAnimationToEnd
+- assertVisible: "Home"

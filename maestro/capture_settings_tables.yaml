@@ -1,0 +1,16 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Settings"
+- waitForAnimationToEnd
+- tapOn: "Tables"
+- waitForAnimationToEnd
+- assertVisible: "Product"
+- takeScreenshot: settings-tables-current
+- tapOn:
+    id: "settings-new-table"
+- assertVisible: "Table name"
+- tapOn: "Cancel"

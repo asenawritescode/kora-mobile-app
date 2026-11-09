@@ -1,0 +1,13 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- assertVisible: "Requests"
+- assertVisible: "Work"
+- assertVisible: "POS"
+- takeScreenshot: mobile-drawer
+- tapOn: "POS"
+- waitForAnimationToEnd
+- assertVisible: "Search product"

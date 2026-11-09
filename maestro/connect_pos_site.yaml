@@ -1,0 +1,19 @@
+appId: com.kora.mobile
+---
+- launchApp
+- assertVisible: "Connect your workspace"
+- tapOn:
+    id: "input-server-url"
+- eraseText: 100
+- inputText: "http://localhost:8000"
+- assertVisible: "http://localhost:8000"
+- tapOn:
+    id: "input-site-id"
+- eraseText: 100
+- inputText: "kora-1ab2e6"
+- hideKeyboard
+- assertVisible: "http://localhost:8000"
+- assertVisible: "kora-1ab2e6"
+- tapOn: "Check server"
+- assertVisible: "Welcome back"
+- assertVisible: "kora-1ab2e6"

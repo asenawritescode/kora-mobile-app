@@ -1,0 +1,18 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Settings"
+- waitForAnimationToEnd
+- tapOn: "Overview"
+- waitForAnimationToEnd
+- tapOn: "SHOP-POS"
+- eraseText
+- inputText: "Draft workspace"
+- hideKeyboard
+- assertVisible: "Unsaved changes"
+- takeScreenshot: settings-overview-dirty
+- tapOn: "Discard"
+- assertNotVisible: "Unsaved changes"

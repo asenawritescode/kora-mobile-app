@@ -1,0 +1,9 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- assertVisible: "Home"
+- tapOn: "Ask Kori"
+- waitForAnimationToEnd
+- assertVisible: "Connected · uses your role access"
+- assertVisible: "Ask about your records"

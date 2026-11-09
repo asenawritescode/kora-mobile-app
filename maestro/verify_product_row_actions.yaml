@@ -1,0 +1,20 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Product"
+- waitForAnimationToEnd
+- assertVisible: "Actions for Cup"
+- tapOn: "Actions for Cup"
+- assertVisible: "Open record"
+- assertVisible: "Edit"
+- assertVisible: "Duplicate"
+- assertVisible: "Delete"
+- pressKey: Back
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "POS"
+- waitForAnimationToEnd
+- assertVisible: "Search product"

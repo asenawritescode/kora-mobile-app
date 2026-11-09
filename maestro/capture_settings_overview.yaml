@@ -1,0 +1,21 @@
+appId: com.kora.mobile
+---
+- launchApp
+- waitForAnimationToEnd
+- tapOn: "Open menu"
+- waitForAnimationToEnd
+- tapOn: "Settings"
+- waitForAnimationToEnd
+- tapOn: "Overview"
+- waitForAnimationToEnd
+- assertVisible: "Palette preview"
+- assertVisible: "Currency"
+- takeScreenshot: settings-overview-current
+- tapOn: "Currency: KES · Kenyan shilling"
+- assertVisible: "Select currency"
+- tapOn: "Search code or currency"
+- inputText: "USD"
+- assertVisible: "USD"
+- hideKeyboard
+- takeScreenshot: settings-currency-picker
+- pressKey: Back
