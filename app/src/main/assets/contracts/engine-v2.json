@@ -157,6 +157,10 @@
         "owner_module_id": {
           "type": "string"
         },
+        "payment": {
+          "$ref": "#/$defs/PaymentOperationContract",
+          "x-optional-pointer": true
+        },
         "permissions": {
           "items": {
             "type": "string"
@@ -2329,6 +2333,53 @@
       ],
       "type": "object"
     },
+    "GrantTenantMember": {
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "maxLength": 254,
+          "minLength": 3,
+          "type": "string",
+          "x-max-utf8-bytes": 254
+        },
+        "full_name": {
+          "minLength": 1,
+          "type": "string",
+          "x-max-utf8-bytes": 140
+        },
+        "invitation_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "meta": {
+          "$ref": "#/$defs/CommandMeta"
+        },
+        "roles": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "type": "array"
+        },
+        "subject": {
+          "maxLength": 140,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,139}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "full_name",
+        "invitation_id",
+        "meta",
+        "roles",
+        "subject"
+      ],
+      "type": "object"
+    },
     "HistoricalSnapshot": {
       "additionalProperties": false,
       "properties": {
@@ -2511,6 +2562,43 @@
       ],
       "type": "object"
     },
+    "LineEntryLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "amount_expr": {
+          "type": "string"
+        },
+        "item_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "lines_path": {
+          "type": "string"
+        },
+        "lookup_input": {
+          "type": "string"
+        },
+        "lookup_query": {
+          "type": "string"
+        },
+        "quantity_field": {
+          "type": "string"
+        },
+        "total_output": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_map",
+        "lines_path",
+        "lookup_input",
+        "lookup_query",
+        "quantity_field"
+      ],
+      "type": "object"
+    },
     "LookupPublishedOperation": {
       "additionalProperties": false,
       "properties": {
@@ -2622,6 +2710,9 @@
               "tenant.invitation.deliver",
               "tenant.invitation.reconcile",
               "tenant.module.lifecycle",
+              "tenant.member.plan",
+              "tenant.member.grant",
+              "tenant.member.revoke",
               "operation.read"
             ],
             "type": "string"
@@ -3964,6 +4055,34 @@
       ],
       "type": "object"
     },
+    "PaymentOperationContract": {
+      "additionalProperties": false,
+      "properties": {
+        "amount_field": {
+          "type": "string"
+        },
+        "currency_field": {
+          "type": "string"
+        },
+        "lines_field": {
+          "type": "string"
+        },
+        "reference_field": {
+          "type": "string"
+        },
+        "source_doctype": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount_field",
+        "currency_field",
+        "lines_field",
+        "reference_field",
+        "source_doctype"
+      ],
+      "type": "object"
+    },
     "PendingWorkSummary": {
       "additionalProperties": false,
       "properties": {
@@ -4124,6 +4243,34 @@
       ],
       "type": "object"
     },
+    "PlanTenantMember": {
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "maxLength": 254,
+          "minLength": 3,
+          "type": "string",
+          "x-max-utf8-bytes": 254
+        },
+        "meta": {
+          "$ref": "#/$defs/CommandMeta"
+        },
+        "roles": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "email",
+        "meta",
+        "roles"
+      ],
+      "type": "object"
+    },
     "ProjectionCheckpoint": {
       "additionalProperties": false,
       "properties": {
@@ -4276,6 +4423,10 @@
         "deployment_id": {
           "type": "string"
         },
+        "display_name": {
+          "maxLength": 120,
+          "type": "string"
+        },
         "meta": {
           "$ref": "#/$defs/CommandMeta"
         },
@@ -4331,6 +4482,10 @@
         },
         "operation": {
           "type": "string"
+        },
+        "payment": {
+          "$ref": "#/$defs/PaymentOperationContract",
+          "x-optional-pointer": true
         },
         "presentation": {
           "$ref": "#/$defs/SurfacePresentation"
@@ -5245,6 +5400,31 @@
       ],
       "type": "object"
     },
+    "RevokeTenantMember": {
+      "additionalProperties": false,
+      "properties": {
+        "meta": {
+          "$ref": "#/$defs/CommandMeta"
+        },
+        "reason": {
+          "minLength": 1,
+          "type": "string",
+          "x-max-utf8-bytes": 1000
+        },
+        "subject": {
+          "maxLength": 140,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,139}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "meta",
+        "reason",
+        "subject"
+      ],
+      "type": "object"
+    },
     "ScheduledJobDefinition": {
       "additionalProperties": false,
       "properties": {
@@ -5602,6 +5782,13 @@
         "icon": {
           "type": "string"
         },
+        "layout": {
+          "type": "string"
+        },
+        "line_entry": {
+          "$ref": "#/$defs/LineEntryLayout",
+          "x-optional-pointer": true
+        },
         "list": {
           "type": "string"
         },
@@ -5730,6 +5917,49 @@
         "site_id",
         "status",
         "version"
+      ],
+      "type": "object"
+    },
+    "TenantMemberPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "problems": {
+          "items": {
+            "$ref": "#/$defs/TenantMemberProblem"
+          },
+          "maxItems": 8,
+          "type": "array"
+        }
+      },
+      "required": [
+        "allowed"
+      ],
+      "type": "object"
+    },
+    "TenantMemberProblem": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "enum": [
+            "role.unknown",
+            "role.not_assignable",
+            "member.already_exists",
+            "member.email_in_use"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
       ],
       "type": "object"
     },
@@ -6121,6 +6351,10 @@
         },
         "owner_module_id": {
           "type": "string"
+        },
+        "payment": {
+          "$ref": "#/$defs/PaymentOperationContract",
+          "x-optional-pointer": true
         },
         "permissions": {
           "items": {
@@ -8269,6 +8503,53 @@
       ],
       "type": "object"
     },
+    "GrantTenantMember": {
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "maxLength": 254,
+          "minLength": 3,
+          "type": "string",
+          "x-max-utf8-bytes": 254
+        },
+        "full_name": {
+          "minLength": 1,
+          "type": "string",
+          "x-max-utf8-bytes": 140
+        },
+        "invitation_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "meta": {
+          "$ref": "#/$defs/CommandMeta"
+        },
+        "roles": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "type": "array"
+        },
+        "subject": {
+          "maxLength": 140,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,139}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "full_name",
+        "invitation_id",
+        "meta",
+        "roles",
+        "subject"
+      ],
+      "type": "object"
+    },
     "HistoricalSnapshot": {
       "additionalProperties": false,
       "properties": {
@@ -8451,6 +8732,43 @@
       ],
       "type": "object"
     },
+    "LineEntryLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "amount_expr": {
+          "type": "string"
+        },
+        "item_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "lines_path": {
+          "type": "string"
+        },
+        "lookup_input": {
+          "type": "string"
+        },
+        "lookup_query": {
+          "type": "string"
+        },
+        "quantity_field": {
+          "type": "string"
+        },
+        "total_output": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_map",
+        "lines_path",
+        "lookup_input",
+        "lookup_query",
+        "quantity_field"
+      ],
+      "type": "object"
+    },
     "LookupPublishedOperation": {
       "additionalProperties": false,
       "properties": {
@@ -8562,6 +8880,9 @@
               "tenant.invitation.deliver",
               "tenant.invitation.reconcile",
               "tenant.module.lifecycle",
+              "tenant.member.plan",
+              "tenant.member.grant",
+              "tenant.member.revoke",
               "operation.read"
             ],
             "type": "string"
@@ -9904,6 +10225,34 @@
       ],
       "type": "object"
     },
+    "PaymentOperationContract": {
+      "additionalProperties": false,
+      "properties": {
+        "amount_field": {
+          "type": "string"
+        },
+        "currency_field": {
+          "type": "string"
+        },
+        "lines_field": {
+          "type": "string"
+        },
+        "reference_field": {
+          "type": "string"
+        },
+        "source_doctype": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount_field",
+        "currency_field",
+        "lines_field",
+        "reference_field",
+        "source_doctype"
+      ],
+      "type": "object"
+    },
     "PendingWorkSummary": {
       "additionalProperties": false,
       "properties": {
@@ -10064,6 +10413,34 @@
       ],
       "type": "object"
     },
+    "PlanTenantMember": {
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "maxLength": 254,
+          "minLength": 3,
+          "type": "string",
+          "x-max-utf8-bytes": 254
+        },
+        "meta": {
+          "$ref": "#/$defs/CommandMeta"
+        },
+        "roles": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "email",
+        "meta",
+        "roles"
+      ],
+      "type": "object"
+    },
     "ProjectionCheckpoint": {
       "additionalProperties": false,
       "properties": {
@@ -10216,6 +10593,10 @@
         "deployment_id": {
           "type": "string"
         },
+        "display_name": {
+          "maxLength": 120,
+          "type": "string"
+        },
         "meta": {
           "$ref": "#/$defs/CommandMeta"
         },
@@ -10271,6 +10652,10 @@
         },
         "operation": {
           "type": "string"
+        },
+        "payment": {
+          "$ref": "#/$defs/PaymentOperationContract",
+          "x-optional-pointer": true
         },
         "presentation": {
           "$ref": "#/$defs/SurfacePresentation"
@@ -11165,6 +11550,31 @@
       ],
       "type": "object"
     },
+    "RevokeTenantMember": {
+      "additionalProperties": false,
+      "properties": {
+        "meta": {
+          "$ref": "#/$defs/CommandMeta"
+        },
+        "reason": {
+          "minLength": 1,
+          "type": "string",
+          "x-max-utf8-bytes": 1000
+        },
+        "subject": {
+          "maxLength": 140,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,139}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "meta",
+        "reason",
+        "subject"
+      ],
+      "type": "object"
+    },
     "ScheduledJobDefinition": {
       "additionalProperties": false,
       "properties": {
@@ -11522,6 +11932,13 @@
         "icon": {
           "type": "string"
         },
+        "layout": {
+          "type": "string"
+        },
+        "line_entry": {
+          "$ref": "#/$defs/LineEntryLayout",
+          "x-optional-pointer": true
+        },
         "list": {
           "type": "string"
         },
@@ -11650,6 +12067,49 @@
         "site_id",
         "status",
         "version"
+      ],
+      "type": "object"
+    },
+    "TenantMemberPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "problems": {
+          "items": {
+            "$ref": "#/$defs/TenantMemberProblem"
+          },
+          "maxItems": 8,
+          "type": "array"
+        }
+      },
+      "required": [
+        "allowed"
+      ],
+      "type": "object"
+    },
+    "TenantMemberProblem": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "enum": [
+            "role.unknown",
+            "role.not_assignable",
+            "member.already_exists",
+            "member.email_in_use"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
       ],
       "type": "object"
     },
@@ -11972,6 +12432,9 @@
       "tenant.invitation.deliver",
       "tenant.invitation.reconcile",
       "tenant.module.lifecycle",
+      "tenant.member.plan",
+      "tenant.member.grant",
+      "tenant.member.revoke",
       "operation.read"
     ],
     "ModuleAccess": [
@@ -12073,6 +12536,12 @@
     ],
     "SubjectBinding": [
       "instance_subject"
+    ],
+    "TenantMemberProblemCode": [
+      "role.unknown",
+      "role.not_assignable",
+      "member.already_exists",
+      "member.email_in_use"
     ],
     "TenantState": [
       "provisioning",
